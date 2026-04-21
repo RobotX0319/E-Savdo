@@ -125,7 +125,9 @@ export default function LicenseGate({ licenseInfo, api, onGranted, onNotice }) {
       setLastMessage(
         s.error === "worker_not_configured"
           ? "Litsenziya serveri sozlanmagan. Dasturchi bilan bog'laning."
-          : "Hali tasdiqlanmagan yoki muddat tugagan. Admin tasdiqlagach qayta urinib ko'ring."
+          : s.error === "clock_tamper"
+            ? "Vaqtni to'g'rilang va internet bilan tekshiring."
+            : "Hali tasdiqlanmagan yoki muddat tugagan. Admin tasdiqlagach qayta urinib ko'ring."
       );
     } catch (err) {
       setLastMessage(err.message || String(err));
@@ -151,6 +153,14 @@ export default function LicenseGate({ licenseInfo, api, onGranted, onNotice }) {
           <div className="license-gate-banner license-gate-banner-warn">
             <strong>Server sozlanmagan.</strong> Dastur ishga tushirishda{" "}
             <code>LICENSE_WORKER_URL</code> muhit o&apos;zgaruvchisi berilishi kerak.
+          </div>
+        ) : null}
+
+        {licenseInfo?.error === "clock_tamper" ? (
+          <div className="license-gate-banner license-gate-banner-warn">
+            <strong>Vaqtni tekshirish:</strong> Qurilma vaqti ortga surilgan yoki obuna bilan
+            bog&apos;langan saqlangan vaqtlar buzilgan. To&apos;g&apos;ri sana va vaqtni sozlang,
+            internetga ulaning va «Litsenziyani tekshirish» ni bosing.
           </div>
         ) : null}
 

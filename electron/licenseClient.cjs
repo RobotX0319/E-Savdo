@@ -6,6 +6,74 @@ function deviceFilePath(userDataDir) {
   return path.join(userDataDir, "esavdo-device.json");
 }
 
+function licenseCachePath(userDataDir) {
+  return path.join(userDataDir, "esavdo-license-cache.json");
+}
+
+function readLicenseCache(userDataDir) {
+  try {
+    const p = licenseCachePath(userDataDir);
+    if (!fs.existsSync(p)) return null;
+    const data = JSON.parse(fs.readFileSync(p, "utf8"));
+    return data && typeof data === "object" ? data : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeLicenseCache(userDataDir, payload) {
+  try {
+    const p = licenseCachePath(userDataDir);
+    fs.writeFileSync(
+      p,
+      JSON.stringify(
+        {
+          ...payload,
+          savedAt: new Date().toISOString()
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+  } catch {
+    /* ignore */
+  }
+}
+
+function clearLicenseCache(userDataDir) {
+  try {
+    const p = licenseCachePath(userDataDir);
+    if (fs.existsSync(p)) fs.unlinkSync(p);
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Muddati hali o'tmagan va avvalgi muvaffaqiyatli tasdiq keshlangan bo'lsa —
+ * tarmoqqa chiqmasdan litsenziya haqida ma'lumot qaytaradi.
+ */
+function getOfflineLicenseIfStillValid(userDataDir, machineId) {
+  const mid = String(machineId || "").trim();
+  const c = readLicenseCache(userDataDir);
+  if (!c || String(c.machineId || "").trim() !== mid) return null;
+  if (c.valid !== true) return null;
+  const exp = c.expiresAt;
+  if (exp == null || String(exp).trim() === "") return null;
+  const t = Date.parse(exp);
+  if (!Number.isFinite(t)) return null;
+  if (t <= Date.now()) return null;
+  return {
+    machineId: mid,
+    valid: true,
+    plan: c.plan,
+    expiresAt: c.expiresAt,
+    label: c.label,
+    fromCache: true
+  };
+}
+
 function getOrCreateMachineId(userDataDir) {
   const fp = deviceFilePath(userDataDir);
   try {
@@ -96,5 +164,9 @@ module.exports = {
   getOrCreateMachineId,
   verifyRemote,
   verifyRemoteWithRetry,
-  requestRemote
+  requestRemote,
+  readLicenseCache,
+  writeLicenseCache,
+  clearLicenseCache,
+  getOfflineLicenseIfStillValid
 };

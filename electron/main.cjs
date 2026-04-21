@@ -6,7 +6,10 @@ const DatabaseService = require("./database.cjs");
 const {
   getOrCreateMachineId,
   verifyRemoteWithRetry,
-  requestRemote
+  requestRemote,
+  writeLicenseCache,
+  clearLicenseCache,
+  getOfflineLicenseIfStillValid
 } = require("./licenseClient.cjs");
 const {
   checkForUpdatesInteractive,
@@ -16,6 +19,12 @@ const {
   getUpdateState,
   installPendingUpdate
 } = require("./updater.cjs");
+const {
+  checkClockIntegrity,
+  bumpMonotonicClock,
+  recordAppClose,
+  recordFirstSubscriptionIfNeeded
+} = require("./licenseTimeGuard.cjs");
 
 function resolveLicenseWorkerUrl() {
   const fromEnv = String(process.env.LICENSE_WORKER_URL || "").trim();
@@ -316,6 +325,21 @@ function registerIpc() {
     }
     const userDataDir = app.getPath("userData");
     const machineId = getOrCreateMachineId(userDataDir);
+
+    const integrity = checkClockIntegrity(userDataDir);
+    if (!integrity.ok) {
+      clearLicenseCache(userDataDir);
+      return {
+        valid: false,
+        machineId,
+        error: "clock_tamper",
+        message:
+          "Qurilma vaqti noto‘g‘ri (ortga surilgan) yoki litsenziya bilan bog‘langan vaqt buzilgan. To‘g‘ri vaqtni sozlang, internetga ulaning va «Litsenziyani tekshirish» ni bosing.",
+        clockReason: integrity.reason
+      };
+    }
+    bumpMonotonicClock(userDataDir);
+
     if (!LICENSE_WORKER_URL) {
       return {
         valid: false,
@@ -323,9 +347,27 @@ function registerIpc() {
         error: "worker_not_configured"
       };
     }
+
+    const offline = getOfflineLicenseIfStillValid(userDataDir, machineId);
+    if (offline) {
+      return offline;
+    }
+
     try {
       const v = await verifyRemoteWithRetry(LICENSE_WORKER_URL, machineId);
       const valid = Boolean(v && v.valid === true);
+      if (valid) {
+        writeLicenseCache(userDataDir, {
+          machineId,
+          valid: true,
+          plan: v?.plan,
+          expiresAt: v?.expiresAt,
+          label: v?.label
+        });
+        recordFirstSubscriptionIfNeeded(userDataDir);
+      } else {
+        clearLicenseCache(userDataDir);
+      }
       return {
         machineId,
         valid,
@@ -392,6 +434,16 @@ app.whenReady().then(async () => {
       createWindow();
     }
   });
+});
+
+app.on("before-quit", () => {
+  if (!SKIP_LICENSE) {
+    try {
+      recordAppClose(app.getPath("userData"));
+    } catch {
+      /* ignore */
+    }
+  }
 });
 
 app.on("window-all-closed", () => {
