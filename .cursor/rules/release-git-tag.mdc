@@ -1,0 +1,16 @@
+---
+description: Versiya ko'tarilganda Git tag yaratish va push qilish (GitHub Actions reliz)
+alwaysApply: true
+---
+
+# Reliz tag (GitHub)
+
+`package.json` dagi `version` oshirilib `main` ga commit + `git push origin main` qilingandan **keyin**, har doim:
+
+1. Versiyani o‘qing (masalan `1.1.3`).
+2. Annotated tag yarating: `git tag -a v<VERSIYA> -m "E-Savdo v<VERSIYA>"` (masalan `v1.1.3`).
+3. Tag ni yuboring: `git push origin v<VERSIYA>`.
+
+Agar tag allaqachon mavjud bo‘lsa, qayta yaratmang; faqat kerak bo‘lsa `git push origin v<VERSIYA>` tekshiring.
+
+Bu tag `.github/workflows/release-win.yml` dagi `v*` trigger orqali Windows reliz buildini ishga tushiradi.
