@@ -11,7 +11,10 @@ const {
 const {
   checkForUpdatesInteractive,
   checkForUpdatesOnStartupQuiet,
-  markUserInvokedUpdateCheck
+  markUserInvokedUpdateCheck,
+  setMainWindowGetter,
+  getUpdateState,
+  installPendingUpdate
 } = require("./updater.cjs");
 
 function resolveLicenseWorkerUrl() {
@@ -138,6 +141,10 @@ function registerIpc() {
     markUserInvokedUpdateCheck();
     return checkForUpdatesInteractive(mainWindow);
   });
+
+  ipcMain.handle("app:get-update-state", () => getUpdateState());
+
+  ipcMain.handle("app:install-pending-update", async () => installPendingUpdate(mainWindow));
 
   ipcMain.handle("dashboard:get", async () => dbService.getDashboard());
   ipcMain.handle("seller-profile:get", async () => dbService.getSellerProfile());
@@ -369,6 +376,7 @@ app.whenReady().then(async () => {
   await dbService.init();
   registerIpc();
   createWindow();
+  setMainWindowGetter(() => mainWindow);
 
   if (app.isPackaged) {
     const delayMs = 12_000;

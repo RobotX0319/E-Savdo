@@ -1,17 +1,86 @@
+const fs = require("fs");
+const path = require("path");
 const { app, dialog } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const semver = require("semver");
 
 let prepared = false;
 
-/** Foydalanuvchi "Dastur haqida" dan tekshiruvni boshlagan — ishga tushishdagi avto-tekshiruvni o'tkazib yuboramiz (ikkilanish / qayta yuklash) */
+/** Foydalanuvchi "Dastur haqida" dan tekshiruvni boshlagan — ishga tushishdagi avto-tekshiruvni o'tkazib yuboramiz */
 let userInvokedUpdateCheckThisSession = false;
 
-/** Menyu orqali tekshiruv allaqachon ishlayapti */
-let interactiveUpdateFlowBusy = false;
+/** Har qanday yangilanish UI oqimi (startup yoki About) — parallel ikkita dialog chiqmasin */
+let updateUiFlowBusy = false;
+
+/** Yuklab olingan, lekin o'rnatilmagan (keyinroq) */
+let pendingDownloaded = null;
+
+/** @type {() => import("electron").BrowserWindow | null} */
+let getMainWindow = () => null;
+
+let listenersAttached = false;
+
+function setMainWindowGetter(fn) {
+  getMainWindow = typeof fn === "function" ? fn : () => null;
+}
 
 function markUserInvokedUpdateCheck() {
   userInvokedUpdateCheckThisSession = true;
+}
+
+function pendingUpdateFilePath() {
+  return path.join(app.getPath("userData"), "esavdo-pending-update.json");
+}
+
+function readPendingFromDisk() {
+  try {
+    const p = pendingUpdateFilePath();
+    if (!fs.existsSync(p)) return null;
+    const j = JSON.parse(fs.readFileSync(p, "utf8"));
+    if (j && typeof j.version === "string" && j.version.trim() !== "") {
+      return { version: j.version.trim() };
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+function writePendingToDisk(info) {
+  try {
+    fs.writeFileSync(pendingUpdateFilePath(), JSON.stringify({ version: info.version }), "utf8");
+  } catch {
+    /* ignore */
+  }
+}
+
+function clearPendingDisk() {
+  try {
+    const p = pendingUpdateFilePath();
+    if (fs.existsSync(p)) fs.unlinkSync(p);
+  } catch {
+    /* ignore */
+  }
+}
+
+function ensurePendingLoaded() {
+  if (pendingDownloaded) return;
+  const fromDisk = readPendingFromDisk();
+  if (fromDisk) pendingDownloaded = fromDisk;
+}
+
+function notifyRendererPending(payload) {
+  const win = getMainWindow();
+  if (!win || win.isDestroyed()) return;
+  const wc = win.webContents;
+  if (!wc || wc.isDestroyed()) return;
+  wc.send("update:pending-install", payload);
+}
+
+function clearPending() {
+  pendingDownloaded = null;
+  clearPendingDisk();
+  notifyRendererPending(null);
 }
 
 function prepareUpdater() {
@@ -19,15 +88,33 @@ function prepareUpdater() {
   prepared = true;
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = false;
-  /** Differential + to'liq yuklash ikki bosqichda bo'lib, ba'zi qurilmalarda qayta yuklash ko'rinishi mumkin */
   autoUpdater.disableDifferentialDownload = true;
 }
 
+/**
+ * @param {import("electron").BrowserWindow | null} mainWindow
+ */
+function attachUpdaterListeners(mainWindow) {
+  if (listenersAttached) return;
+  listenersAttached = true;
+  prepareUpdater();
+  autoUpdater.on("update-downloaded", (info) => {
+    pendingDownloaded = {
+      version: String(info?.version || "")
+    };
+    if (pendingDownloaded.version) {
+      writePendingToDisk(pendingDownloaded);
+      notifyRendererPending({ version: pendingDownloaded.version });
+    }
+  });
+}
+
 function refocusMain(mainWindow) {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  mainWindow.focus();
-  if (mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
-    mainWindow.webContents.focus();
+  const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : getMainWindow();
+  if (!win || win.isDestroyed()) return;
+  win.focus();
+  if (win.webContents && !win.webContents.isDestroyed()) {
+    win.webContents.focus();
   }
 }
 
@@ -36,8 +123,9 @@ function refocusMain(mainWindow) {
  * @param {import("electron-updater").ProgressInfo} info
  */
 function emitDownloadProgress(mainWindow, info) {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  const wc = mainWindow.webContents;
+  const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : getMainWindow();
+  if (!win || win.isDestroyed()) return;
+  const wc = win.webContents;
   if (!wc || wc.isDestroyed()) return;
   const pct = typeof info?.percent === "number" ? info.percent : 0;
   wc.send("update:download-progress", {
@@ -46,7 +134,7 @@ function emitDownloadProgress(mainWindow, info) {
     total: info?.total
   });
   try {
-    mainWindow.setProgressBar(Math.min(1, Math.max(0, pct / 100)));
+    win.setProgressBar(Math.min(1, Math.max(0, pct / 100)));
   } catch {
     /* ignore */
   }
@@ -56,13 +144,14 @@ function emitDownloadProgress(mainWindow, info) {
  * @param {import("electron").BrowserWindow | null} mainWindow
  */
 function clearDownloadProgressUi(mainWindow) {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : getMainWindow();
+  if (!win || win.isDestroyed()) return;
   try {
-    mainWindow.setProgressBar(-1);
+    win.setProgressBar(-1);
   } catch {
     /* ignore */
   }
-  const wc = mainWindow.webContents;
+  const wc = win.webContents;
   if (wc && !wc.isDestroyed()) {
     wc.send("update:download-progress", null);
   }
@@ -80,11 +169,7 @@ async function runDownloadWithProgress(mainWindow, downloadFn) {
     await downloadFn();
   } finally {
     autoUpdater.removeListener("download-progress", onProgress);
-    /** Keyingi tilda progress IPC navbatidan keyin null yuboriladi — banner/modal "qotib" qolmasin */
-    setImmediate(() => {
-      clearDownloadProgressUi(mainWindow);
-      setImmediate(() => clearDownloadProgressUi(mainWindow));
-    });
+    setImmediate(() => clearDownloadProgressUi(mainWindow));
   }
 }
 
@@ -112,9 +197,6 @@ function compareWithRemote(currentVersion, remoteVersionRaw) {
   return "equal";
 }
 
-/**
- * isUpdateAvailable === false bo‘lsa ham updateInfo da serverdagi eng so‘nggi versiya bo‘lishi mumkin.
- */
 function buildNoUpdateMessage(currentVer, check) {
   const rel = compareWithRemote(currentVer, check?.updateInfo?.version);
   if (rel === "newer") {
@@ -124,7 +206,80 @@ function buildNoUpdateMessage(currentVer, check) {
 }
 
 /**
- * Menyu orqali: yangi bo‘lmasa ham xabar beradi.
+ * Yuklab olish tugagach — bitta umumiy o'rnatish so'rovi (takrorlanmasin).
+ * @param {import("electron").BrowserWindow | null} mainWindow
+ */
+async function showInstallReadyDialog(mainWindow) {
+  const { response } = await dialog.showMessageBox(mainWindow, {
+    type: "info",
+    buttons: ["Keyinroq", "O'rnatish va qayta ishga tushirish"],
+    defaultId: 1,
+    cancelId: 0,
+    noLink: true,
+    title: "Yangilanish tayyor",
+    message: "O'rnatish boshlanadi; dastur yopiladi."
+  });
+  refocusMain(mainWindow);
+  return response === 1;
+}
+
+function getUpdateState() {
+  ensurePendingLoaded();
+  return {
+    pendingInstall: pendingDownloaded != null,
+    version: pendingDownloaded?.version ?? null
+  };
+}
+
+/**
+ * "Yangilash" tugmasi: GitHubga murojaat qilmasdan faqat tayyor o'rnatuvchini ishga tushirish.
+ * @param {import("electron").BrowserWindow | null} mainWindow
+ */
+async function installPendingUpdate(mainWindow) {
+  if (!app.isPackaged) {
+    return { ok: false, error: "dev" };
+  }
+  if (updateUiFlowBusy) {
+    return { ok: true, skipped: true, reason: "busy" };
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return { ok: false, error: "Oyna topilmadi." };
+  }
+
+  prepareUpdater();
+  attachUpdaterListeners(mainWindow);
+  ensurePendingLoaded();
+  if (!pendingDownloaded) {
+    return { ok: false, error: "no_pending" };
+  }
+
+  updateUiFlowBusy = true;
+  try {
+    const install = await showInstallReadyDialog(mainWindow);
+    if (install) {
+      clearPending();
+      setImmediate(() => autoUpdater.quitAndInstall(false, true));
+      return { ok: true, action: "install" };
+    }
+    return { ok: true, action: "deferred" };
+  } catch (e) {
+    const msg = e?.message || String(e);
+    await dialog.showMessageBox(mainWindow, {
+      type: "error",
+      buttons: ["OK"],
+      title: "Yangilanish",
+      message: "O'rnatishni boshlashda xato.",
+      detail: msg
+    });
+    refocusMain(mainWindow);
+    return { ok: false, error: msg };
+  } finally {
+    updateUiFlowBusy = false;
+  }
+}
+
+/**
+ * Menyu orqali: avval diskda yuklab olingan (o'rnatilmagan) bo'lsa GitHubni emas, o'rnatishni taklif qiladi.
  * @param {import("electron").BrowserWindow | null} mainWindow
  */
 async function checkForUpdatesInteractive(mainWindow) {
@@ -135,26 +290,39 @@ async function checkForUpdatesInteractive(mainWindow) {
         buttons: ["OK"],
         title: "Yangilanish",
         message:
-          "Bu rejimda (dasturchi) tekshiruv ishlamaydi. Reliz build (.exe o‘rnatuvchi) orqali tekshiring."
+          "Bu rejimda (dasturchi) tekshiruv ishlamaydi. Reliz build (.exe o'rnatuvchi) orqali tekshiring."
       });
       refocusMain(mainWindow);
     }
     return { ok: true, skipped: true, reason: "dev" };
   }
 
-  if (interactiveUpdateFlowBusy) {
+  if (updateUiFlowBusy) {
     return { ok: true, skipped: true, reason: "busy" };
   }
-  interactiveUpdateFlowBusy = true;
-
-  prepareUpdater();
 
   if (!mainWindow || mainWindow.isDestroyed()) {
-    interactiveUpdateFlowBusy = false;
     return { ok: false, error: "Oyna topilmadi." };
   }
 
+  updateUiFlowBusy = true;
+  prepareUpdater();
+  attachUpdaterListeners(mainWindow);
+
   try {
+    ensurePendingLoaded();
+
+    if (pendingDownloaded) {
+      const install = await showInstallReadyDialog(mainWindow);
+      if (install) {
+        clearPending();
+        setImmediate(() => autoUpdater.quitAndInstall(false, true));
+        return { ok: true, action: "install" };
+      }
+      refocusMain(mainWindow);
+      return { ok: true, action: "deferred" };
+    }
+
     const currentVer = app.getVersion();
     const check = await autoUpdater.checkForUpdates();
     if (!check || !check.isUpdateAvailable) {
@@ -190,23 +358,16 @@ async function checkForUpdatesInteractive(mainWindow) {
       autoUpdater.downloadUpdate(check.cancellationToken)
     );
 
-    const r2 = await dialog.showMessageBox(mainWindow, {
-      type: "info",
-      buttons: ["Keyinroq", "O‘rnatish va qayta ishga tushirish"],
-      defaultId: 1,
-      cancelId: 0,
-      noLink: true,
-      title: "Yangilanish tayyor",
-      message: "O‘rnatish boshlanadi; dastur yopiladi."
-    });
+    const install = await showInstallReadyDialog(mainWindow);
 
-    refocusMain(mainWindow);
-
-    if (r2.response === 1) {
+    if (install) {
+      clearPending();
       setImmediate(() => autoUpdater.quitAndInstall(false, true));
+      return { ok: true, action: "install" };
     }
 
-    return { ok: true, action: r2.response === 1 ? "install" : "deferred" };
+    refocusMain(mainWindow);
+    return { ok: true, action: "deferred" };
   } catch (e) {
     clearDownloadProgressUi(mainWindow);
     const msg = e?.message || String(e);
@@ -220,22 +381,36 @@ async function checkForUpdatesInteractive(mainWindow) {
     refocusMain(mainWindow);
     return { ok: false, error: msg };
   } finally {
-    interactiveUpdateFlowBusy = false;
+    updateUiFlowBusy = false;
   }
 }
 
 /**
- * Ishga tushganda: faqat yangi versiya bo‘lsa dialog (xatolikni yashirish).
- * NSIS o‘rnatuvchi uchun mo‘ljallangan; portable da o‘rnatish boshqacha bo‘lishi mumkin.
+ * Ishga tushganda: yuklab olingan bo'lsa GitHub emas; boshqa holda faqat yangi versiya bo'lsa dialog.
  */
 async function checkForUpdatesOnStartupQuiet(mainWindow) {
   if (!app.isPackaged || !mainWindow || mainWindow.isDestroyed()) return;
   if (userInvokedUpdateCheckThisSession) return;
-  if (interactiveUpdateFlowBusy) return;
+  if (updateUiFlowBusy) return;
 
+  updateUiFlowBusy = true;
   prepareUpdater();
+  attachUpdaterListeners(mainWindow);
 
   try {
+    ensurePendingLoaded();
+
+    if (pendingDownloaded) {
+      const install = await showInstallReadyDialog(mainWindow);
+      if (install) {
+        clearPending();
+        setImmediate(() => autoUpdater.quitAndInstall(false, true));
+      } else {
+        refocusMain(mainWindow);
+      }
+      return;
+    }
+
     const check = await autoUpdater.checkForUpdates();
     if (!check || !check.isUpdateAvailable) return;
 
@@ -262,28 +437,25 @@ async function checkForUpdatesOnStartupQuiet(mainWindow) {
       autoUpdater.downloadUpdate(check.cancellationToken)
     );
 
-    const r2 = await dialog.showMessageBox(mainWindow, {
-      type: "info",
-      buttons: ["Keyinroq", "O‘rnatish va qayta ishga tushirish"],
-      defaultId: 1,
-      cancelId: 0,
-      noLink: true,
-      title: "Tayyor",
-      message: "O‘rnatish uchun dastur yopiladi."
-    });
-
+    const install = await showInstallReadyDialog(mainWindow);
     refocusMain(mainWindow);
 
-    if (r2.response === 1) {
+    if (install) {
+      clearPending();
       setImmediate(() => autoUpdater.quitAndInstall(false, true));
     }
   } catch {
-    /* tarmoq / sozlama: foydalanuvchini bezovta qilmaslik */
+    /* tarmoq / sozlama */
+  } finally {
+    updateUiFlowBusy = false;
   }
 }
 
 module.exports = {
   checkForUpdatesInteractive,
   checkForUpdatesOnStartupQuiet,
-  markUserInvokedUpdateCheck
+  markUserInvokedUpdateCheck,
+  setMainWindowGetter,
+  getUpdateState,
+  installPendingUpdate
 };

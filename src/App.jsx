@@ -372,6 +372,8 @@ export default function App() {
   const [aboutModalOpen, setAboutModalOpen] = useState(false);
   const [aboutAppMeta, setAboutAppMeta] = useState(null);
   const [updateDownloadProgress, setUpdateDownloadProgress] = useState(null);
+  /** Yuklab olingan, lekin o'rnatilmagan — "Yangilash" tugmasi */
+  const [updatePendingInstall, setUpdatePendingInstall] = useState(null);
 
   const customerChatEndRef = useRef(null);
   const appMainRef = useRef(null);
@@ -435,6 +437,51 @@ export default function App() {
       setUpdateDownloadProgress(payload == null ? null : payload);
     });
   }, [api]);
+
+  useEffect(() => {
+    if (typeof api?.onUpdatePendingInstall !== "function") {
+      return undefined;
+    }
+    return api.onUpdatePendingInstall((payload) => {
+      if (payload && typeof payload.version === "string" && payload.version.trim() !== "") {
+        setUpdatePendingInstall({ version: payload.version.trim() });
+      } else {
+        setUpdatePendingInstall(null);
+      }
+    });
+  }, [api]);
+
+  useEffect(() => {
+    if (typeof api?.getUpdateState !== "function") {
+      return undefined;
+    }
+    let cancelled = false;
+    void api.getUpdateState().then((s) => {
+      if (cancelled) return;
+      if (s?.pendingInstall && typeof s.version === "string") {
+        setUpdatePendingInstall({ version: s.version });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [api]);
+
+  useEffect(() => {
+    if (!aboutModalOpen || typeof api?.getUpdateState !== "function") return undefined;
+    let cancelled = false;
+    void api.getUpdateState().then((s) => {
+      if (cancelled) return;
+      if (s?.pendingInstall && typeof s.version === "string") {
+        setUpdatePendingInstall({ version: s.version });
+      } else {
+        setUpdatePendingInstall(null);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [aboutModalOpen, api]);
 
   /** Scroll konteyner(lar): scrollbar va kontent oxir/bosh sinxron (scrolldan tashqari ham) */
   useEffect(() => {
@@ -1842,7 +1889,31 @@ export default function App() {
       return;
     }
     try {
-      await api.checkForUpdates();
+      const result = await api.checkForUpdates();
+      if (result?.skipped && result?.reason === "busy") {
+        pushNotice("Yangilanish oynasi allaqachon ochiq yoki jarayon davom etmoqda.");
+      }
+    } finally {
+      setUpdateDownloadProgress(null);
+    }
+    if (typeof api.focusWindow === "function") {
+      await api.focusWindow();
+    }
+  }
+
+  async function handleInstallPendingUpdate() {
+    if (typeof api?.installPendingUpdate !== "function") {
+      pushNotice("Bu funksiya faqat yuklab olingan dasturda mavjud.");
+      return;
+    }
+    try {
+      const result = await api.installPendingUpdate();
+      if (result?.skipped && result?.reason === "busy") {
+        pushNotice("Yangilanish oynasi allaqachon ochiq yoki jarayon davom etmoqda.");
+      } else if (result?.error === "no_pending") {
+        setUpdatePendingInstall(null);
+        pushNotice("O'rnatish uchun tayyor yangilanish yo'q.");
+      }
     } finally {
       setUpdateDownloadProgress(null);
     }
@@ -2150,10 +2221,7 @@ export default function App() {
           className="modal-backdrop"
           role="presentation"
           onMouseDown={(e) => {
-            if (e.target === e.currentTarget) {
-              if (updateDownloadProgress) return;
-              closeAboutModal();
-            }
+            if (e.target === e.currentTarget) closeAboutModal();
           }}
         >
           <div
@@ -2261,14 +2329,22 @@ export default function App() {
             </dl>
             <div className="about-actions">
               {typeof api?.checkForUpdates === "function" ? (
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={Boolean(updateDownloadProgress)}
-                  onClick={() => void handleCheckForUpdates()}
-                >
-                  Yangilanishni tekshirish
-                </button>
+                updateDownloadProgress ? null : updatePendingInstall ? (
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => void handleInstallPendingUpdate()}
+                  >
+                    Yangilash
+                    {updatePendingInstall.version ? (
+                      <span className="muted"> ({updatePendingInstall.version})</span>
+                    ) : null}
+                  </button>
+                ) : (
+                  <button type="button" className="btn" onClick={() => void handleCheckForUpdates()}>
+                    Yangilanishni tekshirish
+                  </button>
+                )
               ) : (
                 <p className="muted about-update-hint">
                   Yangilanishni tekshirish faqat yuklab olingan dasturda.
@@ -2290,12 +2366,7 @@ export default function App() {
               </div>
             ) : null}
             <div className="modal-actions">
-              <button
-                type="button"
-                className="btn secondary"
-                disabled={Boolean(updateDownloadProgress)}
-                onClick={closeAboutModal}
-              >
+              <button type="button" className="btn secondary" onClick={closeAboutModal}>
                 Yopish
               </button>
             </div>

@@ -5,6 +5,21 @@ contextBridge.exposeInMainWorld("api", {
   focusWindow: () => ipcRenderer.invoke("app:focus-window"),
   getAppVersion: () => ipcRenderer.invoke("app:get-version"),
   checkForUpdates: () => ipcRenderer.invoke("app:check-for-updates"),
+  getUpdateState: () => ipcRenderer.invoke("app:get-update-state"),
+  installPendingUpdate: () => ipcRenderer.invoke("app:install-pending-update"),
+  /**
+   * @param {(payload: { version: string } | null) => void} callback
+   * @returns {() => void}
+   */
+  onUpdatePendingInstall: (callback) => {
+    if (typeof callback !== "function") {
+      return () => {};
+    }
+    const channel = "update:pending-install";
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on(channel, listener);
+    return () => ipcRenderer.removeListener(channel, listener);
+  },
   /**
    * @param {(payload: { percent: number; transferred?: number; total?: number } | null) => void} callback
    * @returns {() => void}
