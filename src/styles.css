@@ -626,30 +626,11 @@ body {
   gap: 10px;
 }
 
-.product-unit-input-row {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 8px;
+.product-unit-select {
+  width: 100%;
   min-width: 0;
-}
-
-.product-unit-input-row > input {
-  flex: 1;
-  min-width: 0;
-}
-
-.unit-quick-btns {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  flex-shrink: 0;
-}
-
-.unit-quick-btn {
-  padding: 5px 7px;
-  font-size: 0.78rem;
-  line-height: 1.15;
+  cursor: pointer;
+  font-weight: 500;
 }
 
 label {
@@ -919,6 +900,45 @@ td {
   min-width: 0;
 }
 
+/* Savat jadvali: nom 40%, qolgan 4 ta (miqdor, narx, jami, tugma) har biri 15% — o'ng tomonga yopishilgan */
+.sales-cart-table {
+  table-layout: fixed;
+}
+
+.sales-cart-table col.sales-cart-col-name {
+  width: 40%;
+}
+
+.sales-cart-table col.sales-cart-col-compact {
+  width: 15%;
+}
+
+.sales-cart-table td:nth-child(1) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sales-cart-table th:nth-child(n + 2),
+.sales-cart-table td:nth-child(n + 2) {
+  text-align: right;
+  vertical-align: middle;
+}
+
+.sales-cart-table th.sales-cart-th-actions {
+  width: 15%;
+}
+
+.sales-cart-table td:nth-child(n + 2) input {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.sales-cart-table td:nth-child(5) .btn {
+  white-space: nowrap;
+}
+
 .adhoc-cart-form {
   margin-top: 16px;
   padding-top: 16px;
@@ -932,19 +952,30 @@ td {
   color: #334155;
 }
 
+/* Nomi 40%, qolganlari har biri 15% (8:3 nisbati) */
 .adhoc-cart-fields {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 8fr 3fr 3fr 3fr 3fr;
   gap: 10px 12px;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
+  align-items: end;
+  min-width: 0;
 }
 
 .adhoc-cart-fields .block-label {
   margin: 0;
+  min-width: 0;
 }
 
-.adhoc-cart-field-span2 {
-  grid-column: 1 / -1;
+.adhoc-cart-fields .adhoc-unit-select,
+.adhoc-cart-fields input {
+  width: 100%;
+  min-width: 0;
+}
+
+.adhoc-cart-fields .cart-price-input {
+  width: 100%;
+  max-width: 100%;
 }
 
 .adhoc-cart-add-row {
@@ -957,13 +988,16 @@ td {
   max-width: 100%;
 }
 
+.adhoc-unit-select {
+  width: 100%;
+  min-width: 0;
+  cursor: pointer;
+  font-weight: 500;
+}
+
 @media (max-width: 640px) {
   .adhoc-cart-fields {
     grid-template-columns: 1fr;
-  }
-
-  .adhoc-cart-field-span2 {
-    grid-column: auto;
   }
 }
 
@@ -1349,7 +1383,7 @@ td {
   flex-wrap: wrap;
   align-items: flex-start;
   gap: 8px 18px;
-  margin: 0 0 10px;
+  margin: 10px 0 10px;
   padding: 8px 11px;
   font-size: 0.78rem;
   line-height: 1.35;

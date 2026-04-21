@@ -1,23 +1,8 @@
-const path = require("path");
 const { app, dialog } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const semver = require("semver");
 
 let prepared = false;
-
-function releasesPageHint() {
-  try {
-    const pkg = require(path.join(__dirname, "..", "package.json"));
-    const raw = String(pkg.repository?.url || "").trim();
-    const m = raw.match(/github\.com[/:]([^/]+)\/([^/.]+)/i);
-    if (m) {
-      return `https://github.com/${m[1]}/${m[2]}/releases`;
-    }
-  } catch {
-    /* ignore */
-  }
-  return "";
-}
 
 function prepareUpdater() {
   if (prepared) return;
@@ -112,41 +97,14 @@ function compareWithRemote(currentVersion, remoteVersionRaw) {
 }
 
 /**
- * isUpdateAvailable === false bo‘lsa ham updateInfo da serverdagi eng so‘nggi versiya bo‘ladi.
+ * isUpdateAvailable === false bo‘lsa ham updateInfo da serverdagi eng so‘nggi versiya bo‘lishi mumkin.
  */
-function buildNoUpdateDialog(currentVer, check) {
-  const remoteVer = check?.updateInfo?.version;
-  const rel = compareWithRemote(currentVer, remoteVer);
-
-  if (rel === "equal") {
-    return {
-      message: `Yangi versiya topilmadi. Sizda va rasmiy relizdagi versiya bir xil: ${currentVer}.`,
-      detail:
-        "Avtomatik yangilanish faqat GitHub’da Releases bo‘limida yangi installer va latest.yml chiqarilganda ishlaydi. Kod yangilangan bo‘lsa-yu reliz chiqarilmagan bo‘lsa, yangi .exe ni qo‘lda yuklab o‘rnating."
-    };
-  }
+function buildNoUpdateMessage(currentVer, check) {
+  const rel = compareWithRemote(currentVer, check?.updateInfo?.version);
   if (rel === "newer") {
-    return {
-      message: `Serverda yangiroq reliz ko‘rsatilmoqda (${remoteVer}), lekin dastur uni hozir taklif qilmayapti.`,
-      detail: `Sizda o‘rnatilgan: ${currentVer}. Bunday holat staging (foydalanuvchilarga bosqichma-bosqich chiqarish), moslik tekshiruvi yoki boshqa cheklovlar tufayli bo‘lishi mumkin. Kerak bo‘lsa GitHub Releases dan qo‘lda yuklab oling.`
-    };
+    return `Yangilanish hozir taklif etilmayapti. Sizda ${currentVer}.`;
   }
-  if (rel === "older") {
-    return {
-      message: `Sizda (${currentVer}) rasmiy reliz (${remoteVer}) dan yangiroq — bu odatda sinov yoki maxsus yig‘ma build.`,
-      detail: ""
-    };
-  }
-  const releasesUrl = releasesPageHint();
-  const releasesLine = releasesUrl
-    ? `Internet va ${releasesUrl} manzilini tekshiring.`
-    : "Internet va GitHub’dagi Releases sahifasini tekshiring.";
-  return {
-    message: `Tekshiruv tugadi. Sizdagi versiya: ${currentVer}.`,
-    detail: remoteVer
-      ? `Server javobidagi versiya: ${remoteVer}.`
-      : `GitHub’da latest.yml yoki reliz topilmadi yoki tarmoq xatosi bo‘lishi mumkin. ${releasesLine}`
-  };
+  return `Yangi versiya topilmadi. Sizda ${currentVer}.`;
 }
 
 /**
@@ -178,13 +136,11 @@ async function checkForUpdatesInteractive(mainWindow) {
     const currentVer = app.getVersion();
     const check = await autoUpdater.checkForUpdates();
     if (!check || !check.isUpdateAvailable) {
-      const { message, detail } = buildNoUpdateDialog(currentVer, check);
       await dialog.showMessageBox(mainWindow, {
         type: "info",
         buttons: ["OK"],
         title: "E-Savdo",
-        message,
-        detail: detail || undefined
+        message: buildNoUpdateMessage(currentVer, check)
       });
       refocusMain(mainWindow);
       return { ok: true, action: "none" };

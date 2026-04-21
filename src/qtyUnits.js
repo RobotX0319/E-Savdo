@@ -30,6 +30,14 @@ export function formatQtyPlain(qty) {
   return s.replace(/\.?0+$/, "");
 }
 
+/** Qoldiq ustuni: "100 dona", "10 kg" */
+export function formatStockQtyWithUnit(qty, unit) {
+  const q = formatQtyPlain(qty);
+  const u = String(unit ?? "").trim();
+  if (!u) return q;
+  return `${q} ${u}`;
+}
+
 /**
  * @returns {number | null} null — noto'g'ri yoki 0 ga teng (o'tkazib yuborish)
  */

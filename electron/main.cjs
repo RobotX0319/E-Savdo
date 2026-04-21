@@ -116,11 +116,12 @@ function registerIpc() {
 
   ipcMain.handle("app:get-version", () => {
     let appId = "";
-    let productName = "";
+    let productName = "E-Savdo";
     try {
       const pkg = require(path.join(__dirname, "..", "package.json"));
       appId = String(pkg.build?.appId || "");
-      productName = String(pkg.build?.productName || pkg.name || "");
+      const fromBuild = String(pkg.build?.productName || "").trim();
+      productName = fromBuild || "E-Savdo";
     } catch {
       /* ignore */
     }

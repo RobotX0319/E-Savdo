@@ -6,6 +6,7 @@ import LicenseGate from "./LicenseGate.jsx";
 import {
   exceedsStock,
   formatQtyPlain,
+  formatStockQtyWithUnit,
   isFractionalMeasureUnit,
   normalizeSaleQty,
   normalizeStockLevel,
@@ -49,6 +50,43 @@ const emptyAdhocSaleForm = {
   line_total_minor: ""
 };
 
+const STANDARD_UNIT_OPTIONS = [
+  { value: "dona", label: "dona" },
+  { value: "m²", label: "m²" },
+  { value: "kg", label: "kg" }
+];
+
+const STANDARD_UNIT_SET = new Set(STANDARD_UNIT_OPTIONS.map((o) => o.value));
+
+function canonicalUnitString(raw) {
+  const u = String(raw ?? "").trim();
+  return u === "m2" ? "m²" : u;
+}
+
+/** Savatdagi omborsiz qator: faqat standart uchta birlik */
+function adhocUnitForSelect(raw) {
+  const c = canonicalUnitString(raw);
+  return STANDARD_UNIT_SET.has(c) ? c : "dona";
+}
+
+function productUnitSelectValue(unit) {
+  const c = canonicalUnitString(unit);
+  if (!c) return "dona";
+  return c;
+}
+
+function productUnitSelectOptions(currentUnit) {
+  const c = canonicalUnitString(currentUnit);
+  const out = [];
+  if (c && !STANDARD_UNIT_SET.has(c)) {
+    out.push({ value: c, label: c });
+  }
+  for (const o of STANDARD_UNIT_OPTIONS) {
+    out.push(o);
+  }
+  return out;
+}
+
 function formatMoney(value) {
   return new Intl.NumberFormat("uz-UZ").format(Number(value || 0));
 }
@@ -59,6 +97,31 @@ function roundSomInteger(value) {
   const n = Number(value);
   if (Number.isNaN(n)) return 0;
   return Math.round(n);
+}
+
+/** Omborsiz qator: miqdor × narx → jami (butun so'm) */
+function syncAdhocLineTotalFromQtyAndPrice(form) {
+  const unit = String(form.unit || "dona").trim() || "dona";
+  const qtyNorm = normalizeSaleQty(unit, form.qty);
+  const u = roundSomInteger(form.unit_price_minor);
+  if (qtyNorm == null || qtyNorm <= 0 || u <= 0) {
+    return { ...form, line_total_minor: "" };
+  }
+  const lt = roundSomInteger(qtyNorm * u);
+  return { ...form, line_total_minor: String(lt) };
+}
+
+/** Omborsiz qator: jami / miqdor → narx (savatdagi qator bilan bir xil) */
+function syncAdhocUnitPriceFromLineTotal(form) {
+  const unit = String(form.unit || "dona").trim() || "dona";
+  const qtyNorm = normalizeSaleQty(unit, form.qty);
+  const lt = roundSomInteger(form.line_total_minor);
+  if (qtyNorm == null || qtyNorm <= 0) {
+    return form;
+  }
+  if (lt < 0) return form;
+  const u = roundSomInteger(lt / qtyNorm);
+  return { ...form, unit_price_minor: String(u) };
 }
 
 function isAdhocCartItem(item) {
@@ -2410,52 +2473,21 @@ export default function App() {
                   </label>
                   <label>
                     O&apos;lchov birligi
-                    <div className="product-unit-input-row">
-                      <input
-                        value={productForm.unit}
-                        onChange={(e) => setProductForm({ ...productForm, unit: e.target.value })}
-                        autoComplete="off"
-                      />
-                      {editingProductId ? (
-                        <span className="unit-quick-btns" role="group" aria-label="Tezkor birlik">
-                          <button
-                            type="button"
-                            className="btn tiny secondary unit-quick-btn"
-                            onClick={() => setProductForm((prev) => ({ ...prev, unit: "m²" }))}
-                          >
-                            m²
-                          </button>
-                          <button
-                            type="button"
-                            className="btn tiny secondary unit-quick-btn"
-                            onClick={() => setProductForm((prev) => ({ ...prev, unit: "kg" }))}
-                          >
-                            kg
-                          </button>
-                          <button
-                            type="button"
-                            className="btn tiny secondary unit-quick-btn"
-                            onClick={() => setProductForm((prev) => ({ ...prev, unit: "dona" }))}
-                          >
-                            dona
-                          </button>
-                        </span>
-                      ) : null}
-                    </div>
+                    <select
+                      className="product-unit-select"
+                      value={productUnitSelectValue(productForm.unit)}
+                      onChange={(e) =>
+                        setProductForm({ ...productForm, unit: e.target.value })
+                      }
+                    >
+                      {productUnitSelectOptions(productForm.unit).map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
                   </label>
-                  {!editingProductId ? (
-                    <label>
-                      Kirim narxi (so'm)
-                      <input
-                        type="number"
-                        min="0"
-                        value={productForm.purchase_price_minor}
-                        onChange={(e) =>
-                          setProductForm({ ...productForm, purchase_price_minor: e.target.value })
-                        }
-                      />
-                    </label>
-                  ) : (
+                  {editingProductId ? (
                     <label>
                       Ombordagi qoldiq
                       <input
@@ -2468,7 +2500,7 @@ export default function App() {
                         }
                       />
                     </label>
-                  )}
+                  ) : null}
                   <label>
                     Sotuv narxi (so'm)
                     <input
@@ -3079,7 +3111,7 @@ export default function App() {
                       >
                         <td>{p.name}</td>
                         <td>{formatMoney(p.sale_price_minor)}</td>
-                        <td>{formatQtyPlain(p.stock_qty)}</td>
+                        <td>{formatStockQtyWithUnit(p.stock_qty, p.unit)}</td>
                         <td>
                           <button
                             type="button"
@@ -3110,14 +3142,21 @@ export default function App() {
           <article className="card sales-cart-column">
             <h3>Savat</h3>
             <div className="table-wrap">
-              <table>
+              <table className="sales-cart-table">
+                <colgroup>
+                  <col className="sales-cart-col-name" />
+                  <col className="sales-cart-col-compact" />
+                  <col className="sales-cart-col-compact" />
+                  <col className="sales-cart-col-compact" />
+                  <col className="sales-cart-col-compact" />
+                </colgroup>
                 <thead>
                   <tr>
                     <th>Mahsulot</th>
                     <th>Miqdor</th>
-                    <th>Narx / birlik (so&apos;m)</th>
-                    <th>Jami (so&apos;m)</th>
-                    <th />
+                    <th>Narx</th>
+                    <th>Jami</th>
+                    <th className="sales-cart-th-actions" />
                   </tr>
                 </thead>
                 <tbody>
@@ -3268,24 +3307,38 @@ export default function App() {
                     autoComplete="off"
                     value={adhocSaleForm.qty}
                     onChange={(e) =>
-                      setAdhocSaleForm((f) => ({ ...f, qty: e.target.value }))
+                      setAdhocSaleForm((f) =>
+                        syncAdhocLineTotalFromQtyAndPrice({
+                          ...f,
+                          qty: e.target.value
+                        })
+                      )
                     }
                   />
                 </label>
                 <label className="block-label">
                   Birlik
-                  <input
-                    type="text"
-                    autoComplete="off"
-                    placeholder="dona, kg, l ..."
-                    value={adhocSaleForm.unit}
+                  <select
+                    className="adhoc-unit-select"
+                    value={adhocUnitForSelect(adhocSaleForm.unit)}
                     onChange={(e) =>
-                      setAdhocSaleForm((f) => ({ ...f, unit: e.target.value }))
+                      setAdhocSaleForm((f) =>
+                        syncAdhocLineTotalFromQtyAndPrice({
+                          ...f,
+                          unit: e.target.value
+                        })
+                      )
                     }
-                  />
+                  >
+                    {STANDARD_UNIT_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
                 </label>
                 <label className="block-label">
-                  Narx / birlik (so&apos;m)
+                  Narx
                   <input
                     type="number"
                     min="0"
@@ -3293,15 +3346,17 @@ export default function App() {
                     className="cart-price-input"
                     value={adhocSaleForm.unit_price_minor}
                     onChange={(e) =>
-                      setAdhocSaleForm((f) => ({
-                        ...f,
-                        unit_price_minor: e.target.value
-                      }))
+                      setAdhocSaleForm((f) =>
+                        syncAdhocLineTotalFromQtyAndPrice({
+                          ...f,
+                          unit_price_minor: e.target.value
+                        })
+                      )
                     }
                   />
                 </label>
-                <label className="block-label adhoc-cart-field-span2">
-                  Jami (so&apos;m)
+                <label className="block-label">
+                  Jami
                   <input
                     type="number"
                     min="0"
@@ -3309,10 +3364,12 @@ export default function App() {
                     className="cart-price-input"
                     value={adhocSaleForm.line_total_minor}
                     onChange={(e) =>
-                      setAdhocSaleForm((f) => ({
-                        ...f,
-                        line_total_minor: e.target.value
-                      }))
+                      setAdhocSaleForm((f) =>
+                        syncAdhocUnitPriceFromLineTotal({
+                          ...f,
+                          line_total_minor: e.target.value
+                        })
+                      )
                     }
                   />
                 </label>
