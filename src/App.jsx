@@ -265,6 +265,7 @@ export default function App() {
   const [receiptOptionsModal, setReceiptOptionsModal] = useState(null);
   const [aboutModalOpen, setAboutModalOpen] = useState(false);
   const [aboutAppMeta, setAboutAppMeta] = useState(null);
+  const [updateDownloadProgress, setUpdateDownloadProgress] = useState(null);
 
   const customerChatEndRef = useRef(null);
   const dbMenuRef = useRef(null);
@@ -317,6 +318,15 @@ export default function App() {
   const [productsFormOpen, setProductsFormOpen] = useState(false);
 
   const api = window.api;
+
+  useEffect(() => {
+    if (typeof api?.onUpdateDownloadProgress !== "function") {
+      return undefined;
+    }
+    return api.onUpdateDownloadProgress((payload) => {
+      setUpdateDownloadProgress(payload);
+    });
+  }, [api]);
 
   function restoreRendererFocus() {
     window.requestAnimationFrame(() => {
@@ -1845,6 +1855,21 @@ export default function App() {
         </div>
       </header>
 
+      {updateDownloadProgress ? (
+        <div className="update-download-banner" role="status" aria-live="polite">
+          <span className="update-download-banner-text">
+            Yangilanish yuklanmoqda:{" "}
+            <strong>{Math.round(Number(updateDownloadProgress.percent) || 0)}%</strong>
+          </span>
+          <progress
+            className="update-download-banner-meter"
+            max={100}
+            value={Math.round(Number(updateDownloadProgress.percent) || 0)}
+            aria-label="Yuklab olish jarayoni"
+          />
+        </div>
+      ) : null}
+
       <nav className="tabs">
         {tabs.map((tab) => (
           <button
@@ -1872,6 +1897,7 @@ export default function App() {
           role="presentation"
           onMouseDown={(e) => {
             if (e.target === e.currentTarget) {
+              if (updateDownloadProgress) return;
               closeAboutModal();
             }
           }}
@@ -1984,6 +2010,7 @@ export default function App() {
                 <button
                   type="button"
                   className="btn"
+                  disabled={Boolean(updateDownloadProgress)}
                   onClick={() => void handleCheckForUpdates()}
                 >
                   Yangilanishni tekshirish
@@ -1994,8 +2021,27 @@ export default function App() {
                 </p>
               )}
             </div>
+            {updateDownloadProgress ? (
+              <div className="about-download-progress" role="status" aria-live="polite">
+                <p className="about-download-progress-label">
+                  Yangilanish yuklanmoqda:{" "}
+                  <strong>{Math.round(Number(updateDownloadProgress.percent) || 0)}%</strong>
+                </p>
+                <progress
+                  className="about-download-progress-meter"
+                  max={100}
+                  value={Math.round(Number(updateDownloadProgress.percent) || 0)}
+                  aria-label="Yuklab olish foizi"
+                />
+              </div>
+            ) : null}
             <div className="modal-actions">
-              <button type="button" className="btn secondary" onClick={closeAboutModal}>
+              <button
+                type="button"
+                className="btn secondary"
+                disabled={Boolean(updateDownloadProgress)}
+                onClick={closeAboutModal}
+              >
                 Yopish
               </button>
             </div>

@@ -34,6 +34,59 @@ function refocusMain(mainWindow) {
   }
 }
 
+/**
+ * @param {import("electron").BrowserWindow | null} mainWindow
+ * @param {import("electron-updater").ProgressInfo} info
+ */
+function emitDownloadProgress(mainWindow, info) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const wc = mainWindow.webContents;
+  if (!wc || wc.isDestroyed()) return;
+  const pct = typeof info?.percent === "number" ? info.percent : 0;
+  wc.send("update:download-progress", {
+    percent: pct,
+    transferred: info?.transferred,
+    total: info?.total
+  });
+  try {
+    mainWindow.setProgressBar(Math.min(1, Math.max(0, pct / 100)));
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * @param {import("electron").BrowserWindow | null} mainWindow
+ */
+function clearDownloadProgressUi(mainWindow) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  try {
+    mainWindow.setProgressBar(-1);
+  } catch {
+    /* ignore */
+  }
+  const wc = mainWindow.webContents;
+  if (wc && !wc.isDestroyed()) {
+    wc.send("update:download-progress", null);
+  }
+}
+
+/**
+ * @param {import("electron").BrowserWindow | null} mainWindow
+ * @param {() => Promise<unknown>} downloadFn
+ */
+async function runDownloadWithProgress(mainWindow, downloadFn) {
+  /** @param {import("electron-updater").ProgressInfo} info */
+  const onProgress = (info) => emitDownloadProgress(mainWindow, info);
+  autoUpdater.on("download-progress", onProgress);
+  try {
+    await downloadFn();
+  } finally {
+    autoUpdater.removeListener("download-progress", onProgress);
+    clearDownloadProgressUi(mainWindow);
+  }
+}
+
 function formatReleaseNotes(info) {
   const rn = info?.releaseNotes;
   if (rn == null || rn === "") return "";
@@ -155,7 +208,9 @@ async function checkForUpdatesInteractive(mainWindow) {
       return { ok: true, action: "canceled" };
     }
 
-    await autoUpdater.downloadUpdate(check.cancellationToken);
+    await runDownloadWithProgress(mainWindow, () =>
+      autoUpdater.downloadUpdate(check.cancellationToken)
+    );
 
     const r2 = await dialog.showMessageBox(mainWindow, {
       type: "info",
@@ -175,6 +230,7 @@ async function checkForUpdatesInteractive(mainWindow) {
 
     return { ok: true, action: r2.response === 1 ? "install" : "deferred" };
   } catch (e) {
+    clearDownloadProgressUi(mainWindow);
     const msg = e?.message || String(e);
     await dialog.showMessageBox(mainWindow, {
       type: "error",
@@ -220,7 +276,9 @@ async function checkForUpdatesOnStartupQuiet(mainWindow) {
       return;
     }
 
-    await autoUpdater.downloadUpdate(check.cancellationToken);
+    await runDownloadWithProgress(mainWindow, () =>
+      autoUpdater.downloadUpdate(check.cancellationToken)
+    );
 
     const r2 = await dialog.showMessageBox(mainWindow, {
       type: "info",

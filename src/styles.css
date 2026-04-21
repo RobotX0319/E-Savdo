@@ -394,6 +394,88 @@ body {
   border-top: 1px solid #e2e8f0;
 }
 
+.about-download-progress {
+  margin-top: 14px;
+  padding: 12px;
+  border-radius: 10px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+}
+
+.about-download-progress-label {
+  margin: 0 0 8px;
+  font-size: 0.9rem;
+  color: #1e3a8a;
+}
+
+.about-download-progress-meter {
+  width: 100%;
+  height: 10px;
+  border-radius: 999px;
+  overflow: hidden;
+  border: none;
+  vertical-align: middle;
+}
+
+.about-download-progress-meter::-webkit-progress-bar {
+  background: #dbeafe;
+  border-radius: 999px;
+}
+
+.about-download-progress-meter::-webkit-progress-value {
+  background: #2563eb;
+  border-radius: 999px;
+}
+
+.about-download-progress-meter::-moz-progress-bar {
+  background: #2563eb;
+  border-radius: 999px;
+}
+
+.update-download-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 0 0 12px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: #eff6ff;
+  border: 1px solid #93c5fd;
+  font-size: 0.9rem;
+  color: #1e3a8a;
+}
+
+.update-download-banner-text {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+}
+
+.update-download-banner-meter {
+  flex: 2;
+  min-width: 140px;
+  height: 10px;
+  border-radius: 999px;
+  overflow: hidden;
+  border: none;
+}
+
+.update-download-banner-meter::-webkit-progress-bar {
+  background: #dbeafe;
+  border-radius: 999px;
+}
+
+.update-download-banner-meter::-webkit-progress-value {
+  background: #2563eb;
+  border-radius: 999px;
+}
+
+.update-download-banner-meter::-moz-progress-bar {
+  background: #2563eb;
+  border-radius: 999px;
+}
+
 .about-update-hint {
   margin: 0;
   font-size: 0.9rem;
