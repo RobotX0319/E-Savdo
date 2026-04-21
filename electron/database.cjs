@@ -319,6 +319,46 @@ class DatabaseService {
       this.db.exec("PRAGMA foreign_keys = ON;");
       this.setUserVersion(9);
     }
+    if (this.getUserVersion() < 10) {
+      this.db.exec("PRAGMA foreign_keys = OFF;");
+      this.db.exec(`
+        CREATE TABLE sale_items__v10 (
+          id INTEGER PRIMARY KEY,
+          sale_id INTEGER NOT NULL,
+          product_id INTEGER,
+          adhoc_label TEXT NOT NULL DEFAULT '',
+          adhoc_unit TEXT NOT NULL DEFAULT '',
+          qty REAL NOT NULL,
+          unit_price_minor INTEGER NOT NULL,
+          line_total_minor INTEGER NOT NULL,
+          FOREIGN KEY (sale_id) REFERENCES sales (id),
+          FOREIGN KEY (product_id) REFERENCES products (id)
+        );
+        INSERT INTO sale_items__v10 (id, sale_id, product_id, adhoc_label, adhoc_unit, qty, unit_price_minor, line_total_minor)
+        SELECT id, sale_id, product_id, '', '', qty, unit_price_minor, line_total_minor FROM sale_items;
+        DROP TABLE sale_items;
+        ALTER TABLE sale_items__v10 RENAME TO sale_items;
+      `);
+      this.db.exec(`
+        CREATE TABLE sale_draft_items__v10 (
+          id INTEGER PRIMARY KEY,
+          draft_id INTEGER NOT NULL,
+          product_id INTEGER,
+          adhoc_label TEXT NOT NULL DEFAULT '',
+          adhoc_unit TEXT NOT NULL DEFAULT '',
+          qty REAL NOT NULL,
+          unit_price_minor INTEGER,
+          FOREIGN KEY (draft_id) REFERENCES sale_drafts (id) ON DELETE CASCADE,
+          FOREIGN KEY (product_id) REFERENCES products (id)
+        );
+        INSERT INTO sale_draft_items__v10 (id, draft_id, product_id, adhoc_label, adhoc_unit, qty, unit_price_minor)
+        SELECT id, draft_id, product_id, '', '', qty, unit_price_minor FROM sale_draft_items;
+        DROP TABLE sale_draft_items;
+        ALTER TABLE sale_draft_items__v10 RENAME TO sale_draft_items;
+      `);
+      this.db.exec("PRAGMA foreign_keys = ON;");
+      this.setUserVersion(10);
+    }
   }
 
   getUserVersion() {
@@ -904,6 +944,48 @@ class DatabaseService {
     let total = 0;
     const normalizedItems = [];
     for (const item of list) {
+      if (item.adhoc === true) {
+        const label = String(item.adhoc_label || "").trim();
+        if (!label) {
+          return { ok: false, error: "Omborsiz qator uchun nom kiriting." };
+        }
+        const unitStr = String(item.adhoc_unit || "dona").trim() || "dona";
+        const qty = Number(String(item.qty).replace(",", "."));
+        if (!Number.isFinite(qty) || qty <= 0) {
+          continue;
+        }
+        const qtyNorm = qtyNormalizeSale(unitStr, qty);
+        if (qtyNorm === null) {
+          return {
+            ok: false,
+            error: qtyIsFractionalUnit(unitStr)
+              ? `${label}: miqdor 0,001 dan kichik bo'lmasin.`
+              : `${label}: dona uchun butun musbat son kiriting.`
+          };
+        }
+        const explicit =
+          item.unit_price_minor != null &&
+          item.unit_price_minor !== "" &&
+          !Number.isNaN(Number(item.unit_price_minor));
+        const unitPrice = explicit ? this.roundSomInteger(Number(item.unit_price_minor)) : 0;
+        if (!useCatalogWhenPriceMissing && unitPrice <= 0) {
+          return { ok: false, error: `${label}: narx kiriting.` };
+        }
+        const uClamped = Math.max(0, unitPrice);
+        const lineTotal = this.roundSomInteger(uClamped * qtyNorm);
+        total += lineTotal;
+        normalizedItems.push({
+          product_id: null,
+          adhoc_label: label,
+          adhoc_unit: unitStr,
+          qty: qtyNorm,
+          unit_price_minor: uClamped,
+          line_total_minor: lineTotal,
+          draft_stored_unit_price_minor: explicit ? uClamped : null
+        });
+        continue;
+      }
+
       const productId = Number(item.product_id);
       const qty = Number(String(item.qty).replace(",", "."));
       if (!productId) {
@@ -952,6 +1034,8 @@ class DatabaseService {
       total += lineTotal;
       normalizedItems.push({
         product_id: productId,
+        adhoc_label: "",
+        adhoc_unit: "",
         qty: qtyNorm,
         unit_price_minor: unitPrice,
         line_total_minor: lineTotal,
@@ -975,10 +1059,21 @@ class DatabaseService {
     const saleId = this.getLastInsertId();
     for (const item of normalizedItems) {
       this.execute(
-        `INSERT INTO sale_items (sale_id, product_id, qty, unit_price_minor, line_total_minor)
-         VALUES (?, ?, ?, ?, ?);`,
-        [saleId, item.product_id, item.qty, item.unit_price_minor, item.line_total_minor]
+        `INSERT INTO sale_items (sale_id, product_id, adhoc_label, adhoc_unit, qty, unit_price_minor, line_total_minor)
+         VALUES (?, ?, ?, ?, ?, ?, ?);`,
+        [
+          saleId,
+          item.product_id,
+          item.adhoc_label || "",
+          item.adhoc_unit || "",
+          item.qty,
+          item.unit_price_minor,
+          item.line_total_minor
+        ]
       );
+      if (item.product_id == null) {
+        continue;
+      }
       const current = this.selectOne(
         "SELECT quantity FROM inventory_balances WHERE product_id = ?;",
         [item.product_id]
@@ -1069,7 +1164,12 @@ class DatabaseService {
           sdi.product_id,
           sdi.qty,
           sdi.unit_price_minor,
-          COALESCE(p.name, '(mahsulot topilmadi)') AS product_name
+          sdi.adhoc_label,
+          sdi.adhoc_unit,
+          CASE
+            WHEN sdi.product_id IS NULL THEN TRIM(COALESCE(sdi.adhoc_label, ''))
+            ELSE COALESCE(p.name, '(mahsulot topilmadi)')
+          END AS product_name
         FROM sale_draft_items sdi
         LEFT JOIN products p ON p.id = sdi.product_id
         WHERE sdi.draft_id = ?
@@ -1105,16 +1205,32 @@ class DatabaseService {
 
   createSaleDraft(payload) {
     const raw = Array.isArray(payload.items) ? payload.items : [];
-    const items = raw.map((it) => ({
-      product_id: it.product_id,
-      qty: it.qty,
-      unit_price_minor:
-        it.unit_price_minor !== undefined &&
-        it.unit_price_minor !== null &&
-        it.unit_price_minor !== ""
-          ? this.roundSomInteger(Number(it.unit_price_minor))
-          : undefined
-    }));
+    const items = raw.map((it) => {
+      if (it.adhoc === true) {
+        return {
+          adhoc: true,
+          adhoc_label: it.adhoc_label,
+          adhoc_unit: it.adhoc_unit || "dona",
+          qty: it.qty,
+          unit_price_minor:
+            it.unit_price_minor !== undefined &&
+            it.unit_price_minor !== null &&
+            it.unit_price_minor !== ""
+              ? this.roundSomInteger(Number(it.unit_price_minor))
+              : undefined
+        };
+      }
+      return {
+        product_id: it.product_id,
+        qty: it.qty,
+        unit_price_minor:
+          it.unit_price_minor !== undefined &&
+          it.unit_price_minor !== null &&
+          it.unit_price_minor !== ""
+            ? this.roundSomInteger(Number(it.unit_price_minor))
+            : undefined
+      };
+    });
     const validation = this.validateSaleItems(items, { useCatalogWhenPriceMissing: false });
     if (!validation.ok) {
       return validation;
@@ -1138,8 +1254,15 @@ class DatabaseService {
       const draftId = this.getLastInsertId();
       for (const item of validation.normalizedItems) {
         this.execute(
-          `INSERT INTO sale_draft_items (draft_id, product_id, qty, unit_price_minor) VALUES (?, ?, ?, ?);`,
-          [draftId, item.product_id, item.qty, item.unit_price_minor]
+          `INSERT INTO sale_draft_items (draft_id, product_id, adhoc_label, adhoc_unit, qty, unit_price_minor) VALUES (?, ?, ?, ?, ?, ?);`,
+          [
+            draftId,
+            item.product_id,
+            item.adhoc_label || "",
+            item.adhoc_unit || "",
+            item.qty,
+            item.unit_price_minor
+          ]
         );
       }
       this.db.exec("COMMIT;");
@@ -1161,16 +1284,32 @@ class DatabaseService {
       return { ok: false, error: "Qoralama topilmadi." };
     }
     const rawItems = Array.isArray(payload.items) ? payload.items : [];
-    const items = rawItems.map((it) => ({
-      product_id: it.product_id,
-      qty: it.qty,
-      unit_price_minor:
-        it.unit_price_minor !== undefined &&
-        it.unit_price_minor !== null &&
-        it.unit_price_minor !== ""
-          ? this.roundSomInteger(Number(it.unit_price_minor))
-          : undefined
-    }));
+    const items = rawItems.map((it) => {
+      if (it.adhoc === true) {
+        return {
+          adhoc: true,
+          adhoc_label: it.adhoc_label,
+          adhoc_unit: it.adhoc_unit || "dona",
+          qty: it.qty,
+          unit_price_minor:
+            it.unit_price_minor !== undefined &&
+            it.unit_price_minor !== null &&
+            it.unit_price_minor !== ""
+              ? this.roundSomInteger(Number(it.unit_price_minor))
+              : undefined
+        };
+      }
+      return {
+        product_id: it.product_id,
+        qty: it.qty,
+        unit_price_minor:
+          it.unit_price_minor !== undefined &&
+          it.unit_price_minor !== null &&
+          it.unit_price_minor !== ""
+            ? this.roundSomInteger(Number(it.unit_price_minor))
+            : undefined
+      };
+    });
     const validation = this.validateSaleItems(items, { useCatalogWhenPriceMissing: false });
     if (!validation.ok) {
       return validation;
@@ -1181,8 +1320,15 @@ class DatabaseService {
       this.execute("DELETE FROM sale_draft_items WHERE draft_id = ?;", [draftId]);
       for (const item of validation.normalizedItems) {
         this.execute(
-          `INSERT INTO sale_draft_items (draft_id, product_id, qty, unit_price_minor) VALUES (?, ?, ?, ?);`,
-          [draftId, item.product_id, item.qty, item.unit_price_minor]
+          `INSERT INTO sale_draft_items (draft_id, product_id, adhoc_label, adhoc_unit, qty, unit_price_minor) VALUES (?, ?, ?, ?, ?, ?);`,
+          [
+            draftId,
+            item.product_id,
+            item.adhoc_label || "",
+            item.adhoc_unit || "",
+            item.qty,
+            item.unit_price_minor
+          ]
         );
       }
       this.execute(`UPDATE sale_drafts SET updated_at = ? WHERE id = ?;`, [now, draftId]);
@@ -1209,19 +1355,39 @@ class DatabaseService {
       return { ok: false, error: "Qoralama topilmadi." };
     }
     const rawItems = this.selectAll(
-      "SELECT product_id, qty, unit_price_minor FROM sale_draft_items WHERE draft_id = ?;",
+      "SELECT product_id, adhoc_label, adhoc_unit, qty, unit_price_minor FROM sale_draft_items WHERE draft_id = ?;",
       [id]
     );
-    const items = rawItems.map((r) => ({
-      product_id: r.product_id,
-      qty: r.qty,
-      unit_price_minor:
-        r.unit_price_minor !== undefined &&
-        r.unit_price_minor !== null &&
-        r.unit_price_minor !== ""
-          ? this.roundSomInteger(Number(r.unit_price_minor))
-          : undefined
-    }));
+    const items = rawItems.map((r) => {
+      const pid =
+        r.product_id !== null && r.product_id !== undefined && r.product_id !== ""
+          ? Number(r.product_id)
+          : null;
+      if (pid === null || Number.isNaN(pid)) {
+        return {
+          adhoc: true,
+          adhoc_label: String(r.adhoc_label || "").trim(),
+          adhoc_unit: String(r.adhoc_unit || "dona").trim() || "dona",
+          qty: r.qty,
+          unit_price_minor:
+            r.unit_price_minor !== undefined &&
+            r.unit_price_minor !== null &&
+            r.unit_price_minor !== ""
+              ? this.roundSomInteger(Number(r.unit_price_minor))
+              : undefined
+        };
+      }
+      return {
+        product_id: pid,
+        qty: r.qty,
+        unit_price_minor:
+          r.unit_price_minor !== undefined &&
+          r.unit_price_minor !== null &&
+          r.unit_price_minor !== ""
+            ? this.roundSomInteger(Number(r.unit_price_minor))
+            : undefined
+      };
+    });
     const validation = this.validateSaleItems(items, { useCatalogWhenPriceMissing: false });
     if (!validation.ok) {
       return validation;
@@ -1289,12 +1455,15 @@ class DatabaseService {
         SELECT
           si.id,
           si.product_id,
-          p.name AS product_name,
+          CASE
+            WHEN si.product_id IS NULL THEN TRIM(COALESCE(si.adhoc_label, ''))
+            ELSE COALESCE(p.name, '')
+          END AS product_name,
           si.qty,
           si.unit_price_minor,
           si.line_total_minor
         FROM sale_items si
-        JOIN products p ON p.id = si.product_id
+        LEFT JOIN products p ON p.id = si.product_id
         WHERE si.sale_id = ?;
       `,
         [sale.id]
@@ -1334,12 +1503,15 @@ class DatabaseService {
         SELECT
           si.id,
           si.product_id,
-          p.name AS product_name,
+          CASE
+            WHEN si.product_id IS NULL THEN TRIM(COALESCE(si.adhoc_label, ''))
+            ELSE COALESCE(p.name, '')
+          END AS product_name,
           si.qty,
           si.unit_price_minor,
           si.line_total_minor
         FROM sale_items si
-        JOIN products p ON p.id = si.product_id
+        LEFT JOIN products p ON p.id = si.product_id
         WHERE si.sale_id = ?;
       `,
         [sale.id]
@@ -1372,7 +1544,7 @@ class DatabaseService {
       FROM sale_items si
       JOIN sales s ON s.id = si.sale_id
       JOIN products p ON p.id = si.product_id
-      WHERE s.status = 'completed' AND s.sold_at BETWEEN ? AND ?
+      WHERE s.status = 'completed' AND s.sold_at BETWEEN ? AND ? AND si.product_id IS NOT NULL
       GROUP BY si.product_id, p.name
       ORDER BY total_amount_minor DESC
       LIMIT 10;

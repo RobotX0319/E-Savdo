@@ -38,6 +38,14 @@ const emptySellerProfile = {
   notes: ""
 };
 
+const emptyAdhocSaleForm = {
+  name: "",
+  unit: "dona",
+  qty: "",
+  unit_price_minor: "",
+  line_total_minor: ""
+};
+
 function formatMoney(value) {
   return new Intl.NumberFormat("uz-UZ").format(Number(value || 0));
 }
@@ -50,8 +58,23 @@ function roundSomInteger(value) {
   return Math.round(n);
 }
 
+function isAdhocCartItem(item) {
+  return item?.cart_kind === "adhoc";
+}
+
+function cartRowKey(item) {
+  if (item?.lineKey) return item.lineKey;
+  if (isAdhocCartItem(item)) {
+    return `a-${item.adhoc_label}-${String(item.qty)}`;
+  }
+  return `c-${item.product_id}`;
+}
+
 /** Savat satrida ko'rinadigan 1 dona narxi (tahrir yoki katalog) — backendga shu yuboriladi */
 function effectiveCartUnitPriceMinor(item, product) {
+  if (isAdhocCartItem(item)) {
+    return roundSomInteger(item.unit_price_minor ?? 0);
+  }
   if (item.unit_price_minor != null && item.unit_price_minor !== "") {
     return roundSomInteger(item.unit_price_minor);
   }
@@ -69,6 +92,22 @@ function draftLineStoredUnitMinor(line) {
 function buildSaleItemsFromCart(cartItems, productMap) {
   return cartItems
     .map((item) => {
+      if (isAdhocCartItem(item)) {
+        const unit = String(item.adhoc_unit || "dona").trim() || "dona";
+        const qty = normalizeSaleQty(unit, item.qty);
+        if (qty == null) return null;
+        const label = String(item.adhoc_label || "").trim();
+        if (!label) return null;
+        const u = roundSomInteger(item.unit_price_minor ?? 0);
+        if (u <= 0) return null;
+        return {
+          adhoc: true,
+          adhoc_label: label,
+          adhoc_unit: unit,
+          qty,
+          unit_price_minor: u
+        };
+      }
       const product = productMap.get(Number(item.product_id));
       if (!product) return null;
       const qty = normalizeSaleQty(product.unit, item.qty);
@@ -87,6 +126,26 @@ function sanitizeCartForCheckout(cartItems, productMap) {
   const kept = [];
   let dropped = 0;
   for (const item of cartItems) {
+    if (isAdhocCartItem(item)) {
+      const name = String(item.adhoc_label || "").trim();
+      if (!name) {
+        dropped += 1;
+        continue;
+      }
+      const unit = String(item.adhoc_unit || "dona").trim() || "dona";
+      const qty = normalizeSaleQty(unit, item.qty);
+      if (qty == null || qty <= 0) {
+        dropped += 1;
+        continue;
+      }
+      const u = roundSomInteger(item.unit_price_minor ?? 0);
+      if (u <= 0) {
+        dropped += 1;
+        continue;
+      }
+      kept.push(item);
+      continue;
+    }
     const p = productMap.get(Number(item.product_id));
     if (!p) {
       dropped += 1;
@@ -135,7 +194,16 @@ function addProductToCartLine(setCartItems, productMap, productId, addQty, onNot
         onNotice("Qoldiq yetarli emas.");
         return prev;
       }
-      return [...prev, { product_id: Number(productId), qty: qtyDelta, unit_price_minor: null }];
+      return [
+        ...prev,
+        {
+          cart_kind: "catalog",
+          lineKey: `c-${Number(productId)}`,
+          product_id: Number(productId),
+          qty: qtyDelta,
+          unit_price_minor: null
+        }
+      ];
     }
     const baseParsed = normalizeSaleQty(product.unit, found.qty);
     const base = baseParsed == null ? 0 : baseParsed;
@@ -144,11 +212,12 @@ function addProductToCartLine(setCartItems, productMap, productId, addQty, onNot
       onNotice("Qoldiq yetarli emas.");
       return prev;
     }
-    return prev.map((item) =>
-      Number(item.product_id) === Number(productId)
-        ? { ...item, qty: nextQty }
-        : item
-    );
+    return prev.map((item) => {
+      if (Number(item.product_id) !== Number(productId)) return item;
+      const lineKey = item.lineKey ?? `c-${Number(productId)}`;
+      const cart_kind = item.cart_kind ?? "catalog";
+      return { ...item, cart_kind, lineKey, qty: nextQty };
+    });
   });
 }
 
@@ -179,6 +248,7 @@ export default function App() {
   const [saleCustomerAddress, setSaleCustomerAddress] = useState("");
   const [productSearchQuery, setProductSearchQuery] = useState("");
   const [cartItems, setCartItems] = useState([]);
+  const [adhocSaleForm, setAdhocSaleForm] = useState(emptyAdhocSaleForm);
   const [salePaymentInput, setSalePaymentInput] = useState("");
 
   const [customerDrafts, setCustomerDrafts] = useState([]);
@@ -303,6 +373,13 @@ export default function App() {
 
   const cartTotal = useMemo(() => {
     return cartItems.reduce((sum, item) => {
+      if (isAdhocCartItem(item)) {
+        const unit = String(item.adhoc_unit || "dona").trim() || "dona";
+        const q = normalizeSaleQty(unit, item.qty);
+        if (q == null) return sum;
+        const u = effectiveCartUnitPriceMinor(item, null);
+        return sum + roundSomInteger(u * q);
+      }
       const product = productMap.get(Number(item.product_id));
       if (!product) return sum;
       const q = normalizeSaleQty(product.unit, item.qty);
@@ -949,25 +1026,56 @@ export default function App() {
     setEditingDraftId(null);
   }
 
-  function updateCartQty(productId, qty) {
-    const product = productMap.get(Number(productId));
-    if (!product) return;
+  function updateCartQty(lineKey, qty) {
     const raw = String(qty).replace(",", ".").trim();
+    const prev = cartItemsRef.current;
+    const item = prev.find((row) => cartRowKey(row) === lineKey);
+    if (!item) return;
+
+    if (isAdhocCartItem(item)) {
+      const unit = String(item.adhoc_unit || "dona").trim() || "dona";
+      if (raw === "") {
+        setCartItems((p) =>
+          p.map((row) => (cartRowKey(row) === lineKey ? { ...row, qty: "" } : row))
+        );
+        return;
+      }
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n < 0) return;
+      if (n === 0) {
+        setCartItems((p) =>
+          p.map((row) => (cartRowKey(row) === lineKey ? { ...row, qty: 0 } : row))
+        );
+        return;
+      }
+      const normalized = normalizeSaleQty(unit, n);
+      if (normalized == null) {
+        pushNotice(
+          isFractionalMeasureUnit(unit)
+            ? "Miqdor kamida 0,001 bo'lishi kerak."
+            : "Dona uchun butun musbat son kiriting."
+        );
+        return;
+      }
+      setCartItems((p) =>
+        p.map((row) => (cartRowKey(row) === lineKey ? { ...row, qty: normalized } : row))
+      );
+      return;
+    }
+
+    const product = productMap.get(Number(item.product_id));
+    if (!product) return;
     if (raw === "") {
-      setCartItems((prev) =>
-        prev.map((item) =>
-          Number(item.product_id) === Number(productId) ? { ...item, qty: "" } : item
-        )
+      setCartItems((p) =>
+        p.map((row) => (cartRowKey(row) === lineKey ? { ...row, qty: "" } : row))
       );
       return;
     }
     const n = Number(raw);
     if (!Number.isFinite(n) || n < 0) return;
     if (n === 0) {
-      setCartItems((prev) =>
-        prev.map((item) =>
-          Number(item.product_id) === Number(productId) ? { ...item, qty: 0 } : item
-        )
+      setCartItems((p) =>
+        p.map((row) => (cartRowKey(row) === lineKey ? { ...row, qty: 0 } : row))
       );
       return;
     }
@@ -984,10 +1092,8 @@ export default function App() {
       pushNotice("Qoldiqdan ko'p miqdor kiritildi.");
       return;
     }
-    setCartItems((prev) =>
-      prev.map((item) =>
-        Number(item.product_id) === Number(productId) ? { ...item, qty: normalized } : item
-      )
+    setCartItems((p) =>
+      p.map((row) => (cartRowKey(row) === lineKey ? { ...row, qty: normalized } : row))
     );
   }
 
@@ -1004,22 +1110,22 @@ export default function App() {
     return { lines: kept, dropped };
   }
 
-  function updateCartUnitPrice(productId, raw) {
+  function updateCartUnitPrice(lineKey, raw) {
     const u = roundSomInteger(raw);
     if (u < 0) return;
     setCartItems((prev) =>
       prev.map((item) =>
-        Number(item.product_id) === Number(productId) ? { ...item, unit_price_minor: u } : item
+        cartRowKey(item) === lineKey ? { ...item, unit_price_minor: u } : item
       )
     );
   }
 
-  function updateCartLineTotal(productId, raw) {
+  function updateCartLineTotal(lineKey, raw) {
     const line = roundSomInteger(raw);
     if (line < 0) return;
     setCartItems((prev) =>
       prev.map((item) => {
-        if (Number(item.product_id) !== Number(productId)) return item;
+        if (cartRowKey(item) !== lineKey) return item;
         const q = Number(item.qty) || 0;
         if (q <= 0) return item;
         const u = roundSomInteger(line / q);
@@ -1028,8 +1134,49 @@ export default function App() {
     );
   }
 
+  function handleAddAdhocLineToCart() {
+    const name = adhocSaleForm.name.trim();
+    if (!name) {
+      pushNotice("Mahsulot nomini kiriting.");
+      return;
+    }
+    const unit = String(adhocSaleForm.unit || "dona").trim() || "dona";
+    const rawQty = adhocSaleForm.qty;
+    const qtyNorm = normalizeSaleQty(unit, rawQty);
+    if (qtyNorm == null || qtyNorm <= 0) {
+      pushNotice(
+        isFractionalMeasureUnit(unit)
+          ? "Miqdor kamida 0,001 bo'lishi kerak."
+          : "Dona uchun musbat miqdor kiriting."
+      );
+      return;
+    }
+    let u = roundSomInteger(adhocSaleForm.unit_price_minor);
+    const lt = roundSomInteger(adhocSaleForm.line_total_minor);
+    if (u <= 0 && lt > 0) {
+      u = roundSomInteger(lt / qtyNorm);
+    }
+    if (u <= 0) {
+      pushNotice("Birlik narxi yoki jami qiymatni kiriting.");
+      return;
+    }
+    setCartItems((prev) => [
+      ...prev,
+      {
+        cart_kind: "adhoc",
+        lineKey: `a-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+        adhoc_label: name,
+        adhoc_unit: unit,
+        qty: qtyNorm,
+        unit_price_minor: u
+      }
+    ]);
+    setAdhocSaleForm({ ...emptyAdhocSaleForm });
+  }
+
   function resetSaleInputs() {
     setCartItems([]);
+    setAdhocSaleForm({ ...emptyAdhocSaleForm });
     setSaleCustomerName("");
     setSalePickedCustomerId(null);
     setSaleCustomerPhone("");
@@ -1305,9 +1452,31 @@ export default function App() {
     }
   }
 
+  function isDraftAdhocLine(line) {
+    return line.product_id == null || line.product_id === "";
+  }
+
   async function persistDraftItems(draftId, nextLines) {
     const clean = nextLines
       .map((line) => {
+        if (isDraftAdhocLine(line)) {
+          const label = String(
+            line.adhoc_label || line.product_name || ""
+          ).trim();
+          if (!label) return null;
+          const unit = String(line.adhoc_unit || "dona").trim() || "dona";
+          const qty = normalizeSaleQty(unit, line.qty);
+          if (qty == null) return null;
+          const u = draftLineStoredUnitMinor(line);
+          if (u <= 0) return null;
+          return {
+            adhoc: true,
+            adhoc_label: label,
+            adhoc_unit: unit,
+            qty,
+            unit_price_minor: u
+          };
+        }
         const product = productMap.get(Number(line.product_id));
         if (!product) return null;
         const qty = normalizeSaleQty(product.unit, line.qty);
@@ -1324,6 +1493,7 @@ export default function App() {
       return;
     }
     for (const line of clean) {
+      if (line.adhoc) continue;
       const product = productMap.get(Number(line.product_id));
       if (!product) continue;
       if (exceedsStock(line.qty, product.stock_qty)) {
@@ -1344,13 +1514,42 @@ export default function App() {
     }
   }
 
-  function updateDraftLineQty(draft, productId, qty) {
-    const product = productMap.get(Number(productId));
+  function updateDraftLineQty(draft, lineId, qty) {
+    const lid = Number(lineId);
+    const row = draft.items.find((it) => Number(it.id) === lid);
+    if (!row) return;
+
+    if (isDraftAdhocLine(row)) {
+      const unit = String(row.adhoc_unit || "dona").trim() || "dona";
+      const n = Number(String(qty).replace(",", "."));
+      if (!Number.isFinite(n)) return;
+      if (n <= 0) {
+        const next = draft.items.filter((it) => Number(it.id) !== lid);
+        persistDraftItems(draft.id, next);
+        return;
+      }
+      const qtyN = normalizeSaleQty(unit, n);
+      if (qtyN == null) {
+        pushNotice(
+          isFractionalMeasureUnit(unit)
+            ? "Miqdor kamida 0,001 bo'lishi kerak."
+            : "Dona uchun butun musbat son kiriting."
+        );
+        return;
+      }
+      const next = draft.items.map((it) =>
+        Number(it.id) === lid ? { ...it, qty: qtyN } : it
+      );
+      persistDraftItems(draft.id, next);
+      return;
+    }
+
+    const product = productMap.get(Number(row.product_id));
     if (!product) return;
     const n = Number(String(qty).replace(",", "."));
     if (!Number.isFinite(n)) return;
     if (n <= 0) {
-      const next = draft.items.filter((it) => Number(it.product_id) !== Number(productId));
+      const next = draft.items.filter((it) => Number(it.id) !== lid);
       persistDraftItems(draft.id, next);
       return;
     }
@@ -1368,30 +1567,33 @@ export default function App() {
       return;
     }
     const next = draft.items.map((it) =>
-      Number(it.product_id) === Number(productId) ? { ...it, qty: qtyN } : { ...it }
+      Number(it.id) === lid ? { ...it, qty: qtyN } : it
     );
     persistDraftItems(draft.id, next);
   }
 
-  function removeDraftLine(draft, productId) {
-    const next = draft.items.filter((it) => Number(it.product_id) !== Number(productId));
+  function removeDraftLine(draft, lineId) {
+    const lid = Number(lineId);
+    const next = draft.items.filter((it) => Number(it.id) !== lid);
     persistDraftItems(draft.id, next);
   }
 
-  function updateDraftLineUnit(draft, productId, raw) {
+  function updateDraftLineUnit(draft, lineId, raw) {
+    const lid = Number(lineId);
     const u = roundSomInteger(raw);
     if (u < 0) return;
     const next = draft.items.map((it) =>
-      Number(it.product_id) === Number(productId) ? { ...it, unit_price_minor: u } : it
+      Number(it.id) === lid ? { ...it, unit_price_minor: u } : it
     );
     persistDraftItems(draft.id, next);
   }
 
-  function updateDraftLineLineTotal(draft, productId, raw) {
+  function updateDraftLineLineTotal(draft, lineId, raw) {
+    const lid = Number(lineId);
     const line = roundSomInteger(raw);
     if (line < 0) return;
     const next = draft.items.map((it) => {
-      if (Number(it.product_id) !== Number(productId)) return it;
+      if (Number(it.id) !== lid) return it;
       const q = Number(it.qty) || 0;
       if (q <= 0) return it;
       const u = roundSomInteger(line / q);
@@ -2360,13 +2562,23 @@ export default function App() {
                       <div className="chat-bubble-body">
                         <ul className="chat-line-list">
                           {draft.items.map((line) => {
-                            const product = productMap.get(Number(line.product_id));
+                            const product =
+                              line.product_id == null
+                                ? null
+                                : productMap.get(Number(line.product_id));
                             const label = product?.name || line.product_name;
+                            const measureUnit =
+                              (product?.unit && String(product.unit).trim()) ||
+                              String(line.adhoc_unit || "dona").trim() ||
+                              "dona";
                             const uEff = draftLineStoredUnitMinor(line);
                             const lineEff = roundSomInteger(uEff * Number(line.qty || 0));
-                            const draftQtyStep = product && isFractionalMeasureUnit(product.unit) ? "0.001" : "1";
-                            const draftQtyMin =
-                              product && isFractionalMeasureUnit(product.unit) ? "0.001" : "1";
+                            const draftQtyStep = isFractionalMeasureUnit(measureUnit)
+                              ? "0.001"
+                              : "1";
+                            const draftQtyMin = isFractionalMeasureUnit(measureUnit)
+                              ? "0.001"
+                              : "1";
                             return (
                               <li key={line.id}>
                                 {isEditing ? (
@@ -2384,7 +2596,7 @@ export default function App() {
                                         onBlur={(e) => {
                                           const v = e.target.value;
                                           if (Number(v) === Number(line.qty)) return;
-                                          updateDraftLineQty(draft, line.product_id, v);
+                                          updateDraftLineQty(draft, line.id, v);
                                         }}
                                       />
                                       <input
@@ -2398,7 +2610,7 @@ export default function App() {
                                         onBlur={(e) => {
                                           const v = roundSomInteger(e.target.value);
                                           if (v === uEff) return;
-                                          updateDraftLineUnit(draft, line.product_id, v);
+                                          updateDraftLineUnit(draft, line.id, v);
                                         }}
                                       />
                                       <input
@@ -2412,13 +2624,13 @@ export default function App() {
                                         onBlur={(e) => {
                                           const v = roundSomInteger(e.target.value);
                                           if (v === lineEff) return;
-                                          updateDraftLineLineTotal(draft, line.product_id, v);
+                                          updateDraftLineLineTotal(draft, line.id, v);
                                         }}
                                       />
                                       <button
                                         type="button"
                                         className="btn tiny danger"
-                                        onClick={() => removeDraftLine(draft, line.product_id)}
+                                        onClick={() => removeDraftLine(draft, line.id)}
                                       >
                                         O'chirish
                                       </button>
@@ -2677,6 +2889,66 @@ export default function App() {
                 </thead>
                 <tbody>
                   {cartItems.map((item) => {
+                    const rowKey = cartRowKey(item);
+                    if (isAdhocCartItem(item)) {
+                      const unit = String(item.adhoc_unit || "dona").trim() || "dona";
+                      const uEff = effectiveCartUnitPriceMinor(item, null);
+                      const qEff = normalizeSaleQty(unit, item.qty);
+                      const lineEff =
+                        qEff == null ? 0 : roundSomInteger(uEff * qEff);
+                      const cartQtyStep = isFractionalMeasureUnit(unit) ? "0.001" : "1";
+                      return (
+                        <tr key={rowKey}>
+                          <td>
+                            <span className="adhoc-cart-badge" title="Omborda yo'q">
+                              {item.adhoc_label}
+                            </span>
+                          </td>
+                          <td>
+                            <input
+                              type="number"
+                              min="0"
+                              step={cartQtyStep}
+                              value={item.qty === "" ? "" : item.qty}
+                              onChange={(e) => updateCartQty(rowKey, e.target.value)}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              type="number"
+                              step="100"
+                              min="0"
+                              className="cart-price-input"
+                              value={uEff}
+                              onChange={(e) => updateCartUnitPrice(rowKey, e.target.value)}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              type="number"
+                              step="100"
+                              min="0"
+                              className="cart-price-input"
+                              value={lineEff}
+                              onChange={(e) => updateCartLineTotal(rowKey, e.target.value)}
+                            />
+                          </td>
+                          <td>
+                            <button
+                              type="button"
+                              className="btn tiny danger"
+                              onClick={() =>
+                                setCartItems((prev) =>
+                                  prev.filter((line) => cartRowKey(line) !== rowKey)
+                                )
+                              }
+                            >
+                              O'chirish
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    }
                     const product = productMap.get(Number(item.product_id));
                     if (!product) return null;
                     const uEff = effectiveCartUnitPriceMinor(item, product);
@@ -2685,7 +2957,7 @@ export default function App() {
                       qEff == null ? 0 : roundSomInteger(uEff * qEff);
                     const cartQtyStep = isFractionalMeasureUnit(product.unit) ? "0.001" : "1";
                     return (
-                      <tr key={item.product_id}>
+                      <tr key={rowKey}>
                         <td>{product.name}</td>
                         <td>
                           <input
@@ -2693,7 +2965,7 @@ export default function App() {
                             min="0"
                             step={cartQtyStep}
                             value={item.qty === "" ? "" : item.qty}
-                            onChange={(e) => updateCartQty(item.product_id, e.target.value)}
+                            onChange={(e) => updateCartQty(rowKey, e.target.value)}
                           />
                         </td>
                         <td>
@@ -2703,7 +2975,7 @@ export default function App() {
                             min="0"
                             className="cart-price-input"
                             value={uEff}
-                            onChange={(e) => updateCartUnitPrice(item.product_id, e.target.value)}
+                            onChange={(e) => updateCartUnitPrice(rowKey, e.target.value)}
                           />
                         </td>
                         <td>
@@ -2713,15 +2985,16 @@ export default function App() {
                             min="0"
                             className="cart-price-input"
                             value={lineEff}
-                            onChange={(e) => updateCartLineTotal(item.product_id, e.target.value)}
+                            onChange={(e) => updateCartLineTotal(rowKey, e.target.value)}
                           />
                         </td>
                         <td>
                           <button
+                            type="button"
                             className="btn tiny danger"
                             onClick={() =>
                               setCartItems((prev) =>
-                                prev.filter((line) => Number(line.product_id) !== Number(item.product_id))
+                                prev.filter((line) => cartRowKey(line) !== rowKey)
                               )
                             }
                           >
@@ -2739,6 +3012,89 @@ export default function App() {
                 </tbody>
               </table>
             </div>
+
+            <div className="adhoc-cart-form">
+              <h4>Omborda yo&apos;q mahsulot (bir martalik)</h4>
+              <div className="adhoc-cart-fields">
+                <label className="block-label">
+                  Nomi
+                  <input
+                    type="text"
+                    autoComplete="off"
+                    value={adhocSaleForm.name}
+                    onChange={(e) =>
+                      setAdhocSaleForm((f) => ({ ...f, name: e.target.value }))
+                    }
+                  />
+                </label>
+                <label className="block-label">
+                  Miqdor
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    autoComplete="off"
+                    value={adhocSaleForm.qty}
+                    onChange={(e) =>
+                      setAdhocSaleForm((f) => ({ ...f, qty: e.target.value }))
+                    }
+                  />
+                </label>
+                <label className="block-label">
+                  Birlik
+                  <input
+                    type="text"
+                    autoComplete="off"
+                    placeholder="dona, kg, l ..."
+                    value={adhocSaleForm.unit}
+                    onChange={(e) =>
+                      setAdhocSaleForm((f) => ({ ...f, unit: e.target.value }))
+                    }
+                  />
+                </label>
+                <label className="block-label">
+                  Narx / birlik (so&apos;m)
+                  <input
+                    type="number"
+                    min="0"
+                    step="100"
+                    className="cart-price-input"
+                    value={adhocSaleForm.unit_price_minor}
+                    onChange={(e) =>
+                      setAdhocSaleForm((f) => ({
+                        ...f,
+                        unit_price_minor: e.target.value
+                      }))
+                    }
+                  />
+                </label>
+                <label className="block-label adhoc-cart-field-span2">
+                  Jami (so&apos;m)
+                  <input
+                    type="number"
+                    min="0"
+                    step="100"
+                    className="cart-price-input"
+                    value={adhocSaleForm.line_total_minor}
+                    onChange={(e) =>
+                      setAdhocSaleForm((f) => ({
+                        ...f,
+                        line_total_minor: e.target.value
+                      }))
+                    }
+                  />
+                </label>
+              </div>
+              <div className="adhoc-cart-add-row">
+                <button
+                  type="button"
+                  className="btn secondary"
+                  onClick={handleAddAdhocLineToCart}
+                >
+                  Ro&apos;yxatga qo&apos;shish
+                </button>
+              </div>
+            </div>
+
             <div className="checkout-payment-block">
               <label className="checkout-payment-label">
                 To&apos;lov miqdori (so&apos;m)
