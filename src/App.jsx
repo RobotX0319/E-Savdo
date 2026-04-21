@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { Pencil, Trash2 } from "lucide-react";
+import { Info, Pencil, Trash2 } from "lucide-react";
 import { copySaleReceiptAsImage, printSaleReceipt } from "./receiptUtils.js";
 import LicenseGate from "./LicenseGate.jsx";
 import {
@@ -11,6 +11,9 @@ import {
   normalizeStockLevel,
   roundQty3
 } from "./qtyUnits.js";
+
+const APP_ABOUT_LEAD =
+  "Mahalliy ish stoli dasturi: mahsulotlar va ombor, xaridorlar, savdo, hisobotlar va cheklar.";
 
 const tabs = [
   { id: "dashboard", label: "Dashboard" },
@@ -260,6 +263,8 @@ export default function App() {
   const [deleteCustomerModal, setDeleteCustomerModal] = useState(null);
   const [customerEditModal, setCustomerEditModal] = useState(null);
   const [receiptOptionsModal, setReceiptOptionsModal] = useState(null);
+  const [aboutModalOpen, setAboutModalOpen] = useState(false);
+  const [aboutAppMeta, setAboutAppMeta] = useState(null);
 
   const customerChatEndRef = useRef(null);
   const dbMenuRef = useRef(null);
@@ -759,14 +764,19 @@ export default function App() {
 
   useEffect(() => {
     const anyModal =
-      deleteDraftModal || deleteCustomerModal || customerEditModal || receiptOptionsModal;
+      aboutModalOpen ||
+      deleteDraftModal ||
+      deleteCustomerModal ||
+      customerEditModal ||
+      receiptOptionsModal;
     if (!anyModal) return;
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     const onKey = (e) => {
       if (e.key === "Escape") {
         e.preventDefault();
-        if (receiptOptionsModal) setReceiptOptionsModal(null);
+        if (aboutModalOpen) setAboutModalOpen(false);
+        else if (receiptOptionsModal) setReceiptOptionsModal(null);
         else if (customerEditModal) setCustomerEditModal(null);
         else if (deleteCustomerModal) setDeleteCustomerModal(null);
         else setDeleteDraftModal(null);
@@ -777,7 +787,33 @@ export default function App() {
       document.body.style.overflow = prevOverflow;
       document.removeEventListener("keydown", onKey);
     };
-  }, [deleteDraftModal, deleteCustomerModal, customerEditModal, receiptOptionsModal]);
+  }, [
+    aboutModalOpen,
+    deleteDraftModal,
+    deleteCustomerModal,
+    customerEditModal,
+    receiptOptionsModal
+  ]);
+
+  useEffect(() => {
+    if (!aboutModalOpen) return;
+    let cancelled = false;
+    (async () => {
+      if (typeof api?.getAppVersion !== "function") {
+        if (!cancelled) setAboutAppMeta(null);
+        return;
+      }
+      try {
+        const meta = await api.getAppVersion();
+        if (!cancelled) setAboutAppMeta(meta || null);
+      } catch {
+        if (!cancelled) setAboutAppMeta(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [aboutModalOpen, api]);
 
   async function handleProductSubmit(event) {
     event.preventDefault();
@@ -1620,6 +1656,24 @@ export default function App() {
     }
   }
 
+  function closeAboutModal() {
+    setAboutModalOpen(false);
+  }
+
+  async function copyAboutId(label, text) {
+    const t = String(text || "").trim();
+    if (!t) {
+      pushNotice(`${label} mavjud emas.`);
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(t);
+      pushNotice(`${label} nusxalandi.`);
+    } catch {
+      pushNotice("Bu brauzerga nusxalab bo'lmadi.");
+    }
+  }
+
   async function handleRestoreDatabase() {
     const confirm = await api.showConfirm({
       title: "Bazani backupdan tiklash",
@@ -1732,19 +1786,6 @@ export default function App() {
             </button>
             {dbMenuOpen ? (
               <div className="db-menu" role="menu">
-                {typeof api?.checkForUpdates === "function" ? (
-                  <button
-                    type="button"
-                    className="db-menu-item"
-                    role="menuitem"
-                    onClick={() => {
-                      setDbMenuOpen(false);
-                      void handleCheckForUpdates();
-                    }}
-                  >
-                    Yangilanishni tekshirish
-                  </button>
-                ) : null}
                 <button
                   type="button"
                   className="db-menu-item"
@@ -1792,6 +1833,15 @@ export default function App() {
               </div>
             ) : null}
           </div>
+          <button
+            type="button"
+            className="btn secondary about-top-btn"
+            aria-label="Dastur haqida"
+            title="Dastur haqida"
+            onClick={() => setAboutModalOpen(true)}
+          >
+            <Info size={20} strokeWidth={2} aria-hidden />
+          </button>
         </div>
       </header>
 
@@ -1816,6 +1866,143 @@ export default function App() {
       <div
         className={`app-main${activeTab === "customers" ? " app-main--customers-fit" : ""}`}
       >
+      {aboutModalOpen ? (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) {
+              closeAboutModal();
+            }
+          }}
+        >
+          <div
+            className="modal-dialog modal-dialog--about"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="about-modal-title"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <h3 id="about-modal-title" className="modal-title">
+              Dastur haqida
+            </h3>
+            <p className="modal-body-text about-lead">{APP_ABOUT_LEAD}</p>
+            <dl className="about-meta">
+              <div className="about-meta-row">
+                <dt>Versiya</dt>
+                <dd>
+                  <code className="about-code">
+                    {aboutAppMeta?.version != null && aboutAppMeta.version !== ""
+                      ? String(aboutAppMeta.version)
+                      : "—"}
+                  </code>
+                  {aboutAppMeta?.isPackaged === false ? (
+                    <span className="about-badge about-badge--dev">dev</span>
+                  ) : null}
+                </dd>
+              </div>
+              {aboutAppMeta?.productName ? (
+                <div className="about-meta-row">
+                  <dt>Mahsulot</dt>
+                  <dd>
+                    <span>{aboutAppMeta.productName}</span>
+                  </dd>
+                </div>
+              ) : null}
+              {aboutAppMeta?.appId ? (
+                <div className="about-meta-row about-meta-row--id">
+                  <dt>App ID</dt>
+                  <dd>
+                    <code className="about-code about-code--break">{aboutAppMeta.appId}</code>
+                    <button
+                      type="button"
+                      className="btn tiny secondary about-copy-btn"
+                      onClick={() => void copyAboutId("App ID", aboutAppMeta.appId)}
+                    >
+                      Nusxa
+                    </button>
+                  </dd>
+                </div>
+              ) : null}
+              <div className="about-meta-row about-meta-row--id">
+                <dt>Device ID</dt>
+                <dd>
+                  <code className="about-code about-code--break">
+                    {licenseInfo?.machineId || "—"}
+                  </code>
+                  {licenseInfo?.machineId ? (
+                    <button
+                      type="button"
+                      className="btn tiny secondary about-copy-btn"
+                      onClick={() => void copyAboutId("Device ID", licenseInfo.machineId)}
+                    >
+                      Nusxa
+                    </button>
+                  ) : null}
+                </dd>
+              </div>
+              {licenseInfo?.valid === true && !licenseInfo?.skipped ? (
+                <>
+                  {licenseInfo.plan ? (
+                    <div className="about-meta-row">
+                      <dt>Tarif</dt>
+                      <dd>{String(licenseInfo.plan)}</dd>
+                    </div>
+                  ) : null}
+                  {licenseInfo.label ? (
+                    <div className="about-meta-row">
+                      <dt>Obuna</dt>
+                      <dd>{String(licenseInfo.label)}</dd>
+                    </div>
+                  ) : null}
+                  {licenseInfo.expiresAt ? (
+                    <div className="about-meta-row">
+                      <dt>Muddati</dt>
+                      <dd>
+                        {(() => {
+                          const d = Date.parse(licenseInfo.expiresAt);
+                          return Number.isFinite(d)
+                            ? new Date(d).toLocaleString()
+                            : String(licenseInfo.expiresAt);
+                        })()}
+                      </dd>
+                    </div>
+                  ) : null}
+                </>
+              ) : null}
+              {licenseInfo?.skipped === true ? (
+                <div className="about-meta-row">
+                  <dt>Litsenziya</dt>
+                  <dd>
+                    <span className="about-badge about-badge--dev">dev / o&apos;tkazib yuborilgan</span>
+                  </dd>
+                </div>
+              ) : null}
+            </dl>
+            <div className="about-actions">
+              {typeof api?.checkForUpdates === "function" ? (
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => void handleCheckForUpdates()}
+                >
+                  Yangilanishni tekshirish
+                </button>
+              ) : (
+                <p className="muted about-update-hint">
+                  Yangilanishni tekshirish faqat yuklab olingan dasturda.
+                </p>
+              )}
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="btn secondary" onClick={closeAboutModal}>
+                Yopish
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {deleteCustomerModal ? (
         <div
           className="modal-backdrop"

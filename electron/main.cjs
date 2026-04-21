@@ -114,10 +114,23 @@ function registerIpc() {
     return { ok: true };
   });
 
-  ipcMain.handle("app:get-version", () => ({
-    version: app.getVersion(),
-    isPackaged: app.isPackaged
-  }));
+  ipcMain.handle("app:get-version", () => {
+    let appId = "";
+    let productName = "";
+    try {
+      const pkg = require(path.join(__dirname, "..", "package.json"));
+      appId = String(pkg.build?.appId || "");
+      productName = String(pkg.build?.productName || pkg.name || "");
+    } catch {
+      /* ignore */
+    }
+    return {
+      version: app.getVersion(),
+      isPackaged: app.isPackaged,
+      appId,
+      productName
+    };
+  });
 
   ipcMain.handle("app:check-for-updates", async () => checkForUpdatesInteractive(mainWindow));
 
