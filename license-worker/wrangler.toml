@@ -1,0 +1,7 @@
+name = "esavdo-license"
+main = "src/index.js"
+compatibility_date = "2024-11-01"
+
+[[kv_namespaces]]
+binding = "LICENSE_KV"
+id = "3ca85f2dc66844b2873951b8d3dc4b63"

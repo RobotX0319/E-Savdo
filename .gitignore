@@ -1,0 +1,6 @@
+node_modules
+dist
+release
+*.log
+*.db-shm
+*.db-wal

@@ -1,0 +1,84 @@
+{
+  "name": "e-savdo-mvp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local desktop MVP for inventory, customers, and sales history.",
+  "author": "E-Savdo",
+  "main": "electron/main.cjs",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/RobotX0319/E-Savdo.git"
+  },
+  "scripts": {
+    "dev": "concurrently -k \"vite\" \"wait-on tcp:5173 && cross-env LICENSE_WORKER_URL=https://esavdo-license.fxjournaluz.workers.dev electron .\"",
+    "start": "cross-env LICENSE_WORKER_URL=https://esavdo-license.fxjournaluz.workers.dev electron .",
+    "build:web": "vite build",
+    "preview": "vite preview",
+    "build:electron": "vite build && electron-builder --win",
+    "build:electron:dir": "vite build && electron-builder --win --dir",
+    "release:win": "vite build && electron-builder --win --publish always"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.3",
+    "lucide-react": "^1.8.0",
+    "sql.js": "^1.13.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.4.1",
+    "concurrently": "^9.2.1",
+    "cross-env": "^7.0.3",
+    "electron": "^37.2.0",
+    "electron-builder": "^26.0.12",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vite": "^5.4.19",
+    "wait-on": "^8.0.5"
+  },
+  "build": {
+    "appId": "com.esavdo.desktop",
+    "productName": "E-Savdo",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "license-worker.url",
+      "package.json"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "**/*.wasm"
+    ],
+    "win": {
+      "signAndEditExecutable": false,
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerLanguages": [
+        "en_US"
+      ]
+    },
+    "publish": {
+      "provider": "github",
+      "releaseType": "release"
+    }
+  }
+}
