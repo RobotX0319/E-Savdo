@@ -359,6 +359,15 @@ class DatabaseService {
       this.db.exec("PRAGMA foreign_keys = ON;");
       this.setUserVersion(10);
     }
+    if (this.getUserVersion() < 11) {
+      const siCols = this.selectAll("PRAGMA table_info(sale_items);");
+      if (!siCols.some((c) => c.name === "returned_qty")) {
+        this.db.exec(
+          "ALTER TABLE sale_items ADD COLUMN returned_qty REAL NOT NULL DEFAULT 0;"
+        );
+      }
+      this.setUserVersion(11);
+    }
   }
 
   getUserVersion() {
@@ -1147,6 +1156,149 @@ class DatabaseService {
     }
   }
 
+  clampRemainingForReturn(unitRaw, rawRemaining, maxRemaining) {
+    const u = String(unitRaw || "dona");
+    const maxR = qtyRound3(Number(maxRemaining));
+    if (!Number.isFinite(maxR) || maxR < 0) return null;
+    const n = Number(String(rawRemaining).replace(",", "."));
+    if (!Number.isFinite(n) || n < 0) return null;
+    if (qtyIsFractionalUnit(u)) {
+      const r = qtyRound3(n);
+      if (r > maxR + 1e-6) return null;
+      if (r < 0.001 && r > 1e-9) return null;
+      return r;
+    }
+    const int = Math.round(n);
+    if (Math.abs(n - int) > 1e-5) return null;
+    if (int > maxR + 1e-6) return null;
+    if (int < 0) return null;
+    return int;
+  }
+
+  /**
+   * Xaridor savdosidan qisman qaytarish: omborga qo'shiladi, sale_items va jami yangilanadi.
+   * payload.lines: [{ sale_item_id, remaining_qty }] — mijozda qolgan sotilgan miqdor (qaytarilgandan keyin).
+   */
+  applySaleLineReturns(payload) {
+    const saleId = Number(payload?.sale_id);
+    const rawLines = Array.isArray(payload?.lines) ? payload.lines : [];
+    if (!saleId) {
+      return { ok: false, error: "Savdo ID noto'g'ri." };
+    }
+    if (!rawLines.length) {
+      return { ok: false, error: "Hech qator yuborilmadi." };
+    }
+    const now = this.now();
+    try {
+      this.db.exec("BEGIN TRANSACTION;");
+      const sale = this.selectOne(
+        "SELECT id, total_minor, paid_minor FROM sales WHERE id = ? AND status = 'completed';",
+        [saleId]
+      );
+      if (!sale) {
+        this.db.exec("ROLLBACK;");
+        return { ok: false, error: "Savdo topilmadi yoki tugallanmagan." };
+      }
+      let anyCatalog = false;
+      for (const pl of rawLines) {
+        const sid = Number(pl.sale_item_id);
+        if (!sid) {
+          throw new Error("Qator ID noto'g'ri.");
+        }
+        const row = this.selectOne(
+          `
+          SELECT si.id, si.sale_id, si.product_id, si.qty, COALESCE(si.returned_qty, 0) AS returned_qty,
+                 si.unit_price_minor,
+                 COALESCE(p.unit, si.adhoc_unit, 'dona') AS unit
+          FROM sale_items si
+          LEFT JOIN products p ON p.id = si.product_id
+          WHERE si.id = ? AND si.sale_id = ?;
+        `,
+          [sid, saleId]
+        );
+        if (!row) {
+          throw new Error(`Qator #${sid} bu savdoga tegishli emas.`);
+        }
+        if (row.product_id == null) {
+          continue;
+        }
+        anyCatalog = true;
+        const qty = qtyRound3(Number(row.qty));
+        const returnedPrev = qtyRound3(Number(row.returned_qty));
+        const maxSellable = qtyRound3(qty - returnedPrev);
+        const rem = this.clampRemainingForReturn(
+          row.unit,
+          pl.remaining_qty,
+          maxSellable
+        );
+        if (rem == null) {
+          throw new Error(
+            `Qator uchun qolgan miqdor noto'g'ri (0 dan ${String(maxSellable)} gacha).`
+          );
+        }
+        const newReturned = qtyRound3(qty - rem);
+        if (newReturned + 1e-9 < returnedPrev) {
+          throw new Error("Qaytarishni kamaytirish mumkin emas.");
+        }
+        const delta = qtyRound3(newReturned - returnedPrev);
+        if (delta <= 1e-9) {
+          continue;
+        }
+        const unitPrice = this.roundSomInteger(Number(row.unit_price_minor));
+        const newLineTotal = this.roundSomInteger(unitPrice * rem);
+        this.execute(
+          `UPDATE sale_items SET returned_qty = ?, line_total_minor = ? WHERE id = ?;`,
+          [newReturned, newLineTotal, sid]
+        );
+        const inv = this.selectOne(
+          "SELECT quantity FROM inventory_balances WHERE product_id = ?;",
+          [row.product_id]
+        );
+        if (!inv) {
+          throw new Error(`Ombor yozuvi topilmadi (mahsulot #${row.product_id}).`);
+        }
+        const nextStock = qtyRound3(Number(inv.quantity) + delta);
+        this.execute(
+          "UPDATE inventory_balances SET quantity = ?, updated_at = ? WHERE product_id = ?;",
+          [nextStock, now, row.product_id]
+        );
+        this.execute(
+          `INSERT INTO inventory_movements (product_id, delta_qty, reason, ref_type, ref_id, note, created_at)
+           VALUES (?, ?, 'sale_return', 'sale', ?, ?, ?);`,
+          [row.product_id, delta, saleId, `Savdo #${saleId} qaytarish`, now]
+        );
+      }
+      if (!anyCatalog) {
+        this.db.exec("ROLLBACK;");
+        return {
+          ok: false,
+          error: "Ombordagi mahsulot qatorlari yo'q — qaytarish mumkin emas."
+        };
+      }
+      const lineRows = this.selectAll(
+        `SELECT line_total_minor FROM sale_items WHERE sale_id = ?;`,
+        [saleId]
+      );
+      let newTotal = 0;
+      for (const L of lineRows) {
+        newTotal += this.roundSomInteger(Number(L.line_total_minor));
+      }
+      const oldPaid = this.roundSomInteger(Number(sale.paid_minor ?? sale.total_minor));
+      const newPaid = Math.min(oldPaid, newTotal);
+      this.execute(`UPDATE sales SET total_minor = ?, paid_minor = ? WHERE id = ?;`, [
+        newTotal,
+        newPaid,
+        saleId
+      ]);
+      this.db.exec("COMMIT;");
+      this.persist();
+      return { ok: true, sale_id: saleId, total_minor: newTotal };
+    } catch (e) {
+      this.db.exec("ROLLBACK;");
+      return { ok: false, error: e.message || String(e) };
+    }
+  }
+
   listSaleDraftsByCustomer(customerId) {
     const id = Number(customerId);
     if (!id) {
@@ -1459,7 +1611,9 @@ class DatabaseService {
             WHEN si.product_id IS NULL THEN TRIM(COALESCE(si.adhoc_label, ''))
             ELSE COALESCE(p.name, '')
           END AS product_name,
+          COALESCE(p.unit, si.adhoc_unit, '') AS unit,
           si.qty,
+          COALESCE(si.returned_qty, 0) AS returned_qty,
           si.unit_price_minor,
           si.line_total_minor
         FROM sale_items si
@@ -1507,7 +1661,9 @@ class DatabaseService {
             WHEN si.product_id IS NULL THEN TRIM(COALESCE(si.adhoc_label, ''))
             ELSE COALESCE(p.name, '')
           END AS product_name,
+          COALESCE(p.unit, si.adhoc_unit, '') AS unit,
           si.qty,
+          COALESCE(si.returned_qty, 0) AS returned_qty,
           si.unit_price_minor,
           si.line_total_minor
         FROM sale_items si
@@ -1539,7 +1695,7 @@ class DatabaseService {
       `
       SELECT
         p.name,
-        SUM(si.qty) AS total_qty,
+        SUM(si.qty - COALESCE(si.returned_qty, 0)) AS total_qty,
         SUM(si.line_total_minor) AS total_amount_minor
       FROM sale_items si
       JOIN sales s ON s.id = si.sale_id

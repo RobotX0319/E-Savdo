@@ -1,6 +1,12 @@
 /** Savdo cheki: chop etish oynasi va clipboard uchun PNG */
 
-import { formatQtyPlain } from "./qtyUnits.js";
+import { formatQtyPlain, roundQty3 } from "./qtyUnits.js";
+
+function effectiveSaleLineQty(item) {
+  const q = Number(item.qty) || 0;
+  const r = Number(item.returned_qty) || 0;
+  return roundQty3(q - r);
+}
 
 function fmtMoney(value) {
   return new Intl.NumberFormat("uz-UZ").format(Number(value || 0));
@@ -78,7 +84,7 @@ export function printSaleReceipt(sale, customerName, profile) {
     .map(
       (it) =>
         `<tr><td>${escapeHtml(it.product_name)}</td><td style="text-align:right">${escapeHtml(
-          formatQtyPlain(it.qty)
+          formatQtyPlain(effectiveSaleLineQty(it))
         )}</td><td style="text-align:right">${fmtMoney(
           it.unit_price_minor
         )}</td><td style="text-align:right">${fmtMoney(it.line_total_minor)}</td></tr>`
@@ -453,7 +459,7 @@ export async function copySaleReceiptAsImage(sale, customerName, profile) {
       ly += lineH;
     }
     ctx.textAlign = "right";
-    ctx.fillText(formatQtyPlain(it.qty), colX.qty + 44, y + 16);
+    ctx.fillText(formatQtyPlain(effectiveSaleLineQty(it)), colX.qty + 44, y + 16);
     ctx.fillText(fmt(it.unit_price_minor), colX.price + 62, y + 16);
     ctx.fillText(fmt(it.line_total_minor), colX.sum + 78, y + 16);
     ctx.textAlign = "left";

@@ -4,11 +4,23 @@ const semver = require("semver");
 
 let prepared = false;
 
+/** Foydalanuvchi "Dastur haqida" dan tekshiruvni boshlagan — ishga tushishdagi avto-tekshiruvni o'tkazib yuboramiz (ikkilanish / qayta yuklash) */
+let userInvokedUpdateCheckThisSession = false;
+
+/** Menyu orqali tekshiruv allaqachon ishlayapti */
+let interactiveUpdateFlowBusy = false;
+
+function markUserInvokedUpdateCheck() {
+  userInvokedUpdateCheckThisSession = true;
+}
+
 function prepareUpdater() {
   if (prepared) return;
   prepared = true;
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = false;
+  /** Differential + to'liq yuklash ikki bosqichda bo'lib, ba'zi qurilmalarda qayta yuklash ko'rinishi mumkin */
+  autoUpdater.disableDifferentialDownload = true;
 }
 
 function refocusMain(mainWindow) {
@@ -68,7 +80,11 @@ async function runDownloadWithProgress(mainWindow, downloadFn) {
     await downloadFn();
   } finally {
     autoUpdater.removeListener("download-progress", onProgress);
-    clearDownloadProgressUi(mainWindow);
+    /** Keyingi tilda progress IPC navbatidan keyin null yuboriladi — banner/modal "qotib" qolmasin */
+    setImmediate(() => {
+      clearDownloadProgressUi(mainWindow);
+      setImmediate(() => clearDownloadProgressUi(mainWindow));
+    });
   }
 }
 
@@ -126,9 +142,15 @@ async function checkForUpdatesInteractive(mainWindow) {
     return { ok: true, skipped: true, reason: "dev" };
   }
 
+  if (interactiveUpdateFlowBusy) {
+    return { ok: true, skipped: true, reason: "busy" };
+  }
+  interactiveUpdateFlowBusy = true;
+
   prepareUpdater();
 
   if (!mainWindow || mainWindow.isDestroyed()) {
+    interactiveUpdateFlowBusy = false;
     return { ok: false, error: "Oyna topilmadi." };
   }
 
@@ -197,6 +219,8 @@ async function checkForUpdatesInteractive(mainWindow) {
     });
     refocusMain(mainWindow);
     return { ok: false, error: msg };
+  } finally {
+    interactiveUpdateFlowBusy = false;
   }
 }
 
@@ -206,6 +230,8 @@ async function checkForUpdatesInteractive(mainWindow) {
  */
 async function checkForUpdatesOnStartupQuiet(mainWindow) {
   if (!app.isPackaged || !mainWindow || mainWindow.isDestroyed()) return;
+  if (userInvokedUpdateCheckThisSession) return;
+  if (interactiveUpdateFlowBusy) return;
 
   prepareUpdater();
 
@@ -258,5 +284,6 @@ async function checkForUpdatesOnStartupQuiet(mainWindow) {
 
 module.exports = {
   checkForUpdatesInteractive,
-  checkForUpdatesOnStartupQuiet
+  checkForUpdatesOnStartupQuiet,
+  markUserInvokedUpdateCheck
 };

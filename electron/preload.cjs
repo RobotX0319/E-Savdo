@@ -46,6 +46,7 @@ contextBridge.exposeInMainWorld("api", {
   deleteSaleDraft: (draftId) => ipcRenderer.invoke("sale-drafts:delete", draftId),
 
   createSale: (payload) => ipcRenderer.invoke("sales:create", payload),
+  applySaleLineReturns: (payload) => ipcRenderer.invoke("sales:apply-line-returns", payload),
   listSales: (limit) => ipcRenderer.invoke("sales:list", limit),
   listSalesByCustomer: (customerId, limit) =>
     ipcRenderer.invoke("sales:listByCustomer", customerId, limit),

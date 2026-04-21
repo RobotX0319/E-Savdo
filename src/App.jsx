@@ -155,6 +155,47 @@ function draftLineStoredUnitMinor(line) {
   return 0;
 }
 
+/** Savdo qatorida mijozda qolgan sotilgan miqdor */
+function saleLineSoldRemaining(item) {
+  const q = Number(item.qty) || 0;
+  const r = Number(item.returned_qty) || 0;
+  return roundQty3(q - r);
+}
+
+/** Qaytarish modali: qolgan miqdorni tekshirish */
+function parseRemainingQtyForReturn(unit, raw, maxRemain) {
+  const maxR = roundQty3(Number(maxRemain));
+  if (!Number.isFinite(maxR) || maxR < 0) return null;
+  const n = Number(String(raw ?? "").replace(",", "."));
+  if (!Number.isFinite(n) || n < 0) return null;
+  if (isFractionalMeasureUnit(unit)) {
+    const r = roundQty3(n);
+    if (r > maxR + 1e-6) return null;
+    if (r < 0.001 && r > 1e-9) return null;
+    return r;
+  }
+  const int = Math.round(n);
+  if (Math.abs(n - int) > 1e-5) return null;
+  if (int > maxR + 1e-6) return null;
+  if (int < 0) return null;
+  return int;
+}
+
+/** Scrollbar oxiriga yetgan bo'lsa, kontent ham aniq pastki chegarani ko'rsatsin (subpiksel / wheel drift) */
+function syncScrollContainerEdges(el) {
+  if (!el) return;
+  const sh = el.scrollHeight;
+  const ch = el.clientHeight;
+  const max = Math.max(0, sh - ch);
+  if (max <= 0) return;
+  const st = el.scrollTop;
+  if (st + ch >= sh - 2) {
+    if (Math.abs(st - max) > 0.25) el.scrollTop = max;
+  } else if (st <= 1) {
+    if (st > 0.25) el.scrollTop = 0;
+  }
+}
+
 function buildSaleItemsFromCart(cartItems, productMap) {
   return cartItems
     .map((item) => {
@@ -326,11 +367,15 @@ export default function App() {
   const [deleteCustomerModal, setDeleteCustomerModal] = useState(null);
   const [customerEditModal, setCustomerEditModal] = useState(null);
   const [receiptOptionsModal, setReceiptOptionsModal] = useState(null);
+  const [saleReturnModal, setSaleReturnModal] = useState(null);
+  const [saleReturnDraftLines, setSaleReturnDraftLines] = useState([]);
   const [aboutModalOpen, setAboutModalOpen] = useState(false);
   const [aboutAppMeta, setAboutAppMeta] = useState(null);
   const [updateDownloadProgress, setUpdateDownloadProgress] = useState(null);
 
   const customerChatEndRef = useRef(null);
+  const appMainRef = useRef(null);
+  const customerChatScrollRef = useRef(null);
   const dbMenuRef = useRef(null);
   const [dbMenuOpen, setDbMenuOpen] = useState(false);
 
@@ -387,9 +432,77 @@ export default function App() {
       return undefined;
     }
     return api.onUpdateDownloadProgress((payload) => {
-      setUpdateDownloadProgress(payload);
+      setUpdateDownloadProgress(payload == null ? null : payload);
     });
   }, [api]);
+
+  /** Scroll konteyner(lar): scrollbar va kontent oxir/bosh sinxron (scrolldan tashqari ham) */
+  useEffect(() => {
+    if (loading) return undefined;
+    const getNodes = () => [appMainRef.current, customerChatScrollRef.current].filter(Boolean);
+    const nodes = getNodes();
+    if (!nodes.length) return undefined;
+
+    let syncAllRaf = 0;
+    const scheduleSyncAll = () => {
+      window.cancelAnimationFrame(syncAllRaf);
+      syncAllRaf = window.requestAnimationFrame(() => {
+        getNodes().forEach((n) => syncScrollContainerEdges(n));
+      });
+    };
+
+    const onResize = () => scheduleSyncAll();
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") scheduleSyncAll();
+    };
+    window.addEventListener("resize", onResize, { passive: true });
+    document.addEventListener("visibilitychange", onVisibility);
+    scheduleSyncAll();
+
+    const cleanups = nodes.map((el) => {
+      let raf = 0;
+      let wheelT = 0;
+      let moRaf = 0;
+      const scheduleSync = () => {
+        window.cancelAnimationFrame(raf);
+        raf = window.requestAnimationFrame(() => syncScrollContainerEdges(el));
+      };
+      const onWheel = () => {
+        window.clearTimeout(wheelT);
+        wheelT = window.setTimeout(() => syncScrollContainerEdges(el), 100);
+      };
+      const onMut = () => {
+        window.cancelAnimationFrame(moRaf);
+        moRaf = window.requestAnimationFrame(() => syncScrollContainerEdges(el));
+      };
+      el.addEventListener("scroll", scheduleSync, { passive: true });
+      el.addEventListener("wheel", onWheel, { passive: true });
+      const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(scheduleSync) : null;
+      if (ro) ro.observe(el);
+      const mo =
+        typeof MutationObserver !== "undefined"
+          ? new MutationObserver(onMut)
+          : null;
+      if (mo) {
+        mo.observe(el, { childList: true, subtree: true });
+      }
+      return () => {
+        window.cancelAnimationFrame(raf);
+        window.cancelAnimationFrame(moRaf);
+        window.clearTimeout(wheelT);
+        el.removeEventListener("scroll", scheduleSync);
+        el.removeEventListener("wheel", onWheel);
+        if (ro) ro.disconnect();
+        if (mo) mo.disconnect();
+      };
+    });
+    return () => {
+      window.cancelAnimationFrame(syncAllRaf);
+      window.removeEventListener("resize", onResize);
+      document.removeEventListener("visibilitychange", onVisibility);
+      cleanups.forEach((fn) => fn());
+    };
+  }, [loading, activeTab]);
 
   function restoreRendererFocus() {
     window.requestAnimationFrame(() => {
@@ -841,7 +954,8 @@ export default function App() {
       deleteDraftModal ||
       deleteCustomerModal ||
       customerEditModal ||
-      receiptOptionsModal;
+      receiptOptionsModal ||
+      saleReturnModal;
     if (!anyModal) return;
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
@@ -850,7 +964,10 @@ export default function App() {
         e.preventDefault();
         if (aboutModalOpen) setAboutModalOpen(false);
         else if (receiptOptionsModal) setReceiptOptionsModal(null);
-        else if (customerEditModal) setCustomerEditModal(null);
+        else if (saleReturnModal) {
+          setSaleReturnModal(null);
+          setSaleReturnDraftLines([]);
+        } else if (customerEditModal) setCustomerEditModal(null);
         else if (deleteCustomerModal) setDeleteCustomerModal(null);
         else setDeleteDraftModal(null);
       }
@@ -865,7 +982,8 @@ export default function App() {
     deleteDraftModal,
     deleteCustomerModal,
     customerEditModal,
-    receiptOptionsModal
+    receiptOptionsModal,
+    saleReturnModal
   ]);
 
   useEffect(() => {
@@ -1723,9 +1841,81 @@ export default function App() {
       pushNotice("Yangilanish tekshiruvi faqat Electron dasturida mavjud.");
       return;
     }
-    await api.checkForUpdates();
+    try {
+      await api.checkForUpdates();
+    } finally {
+      setUpdateDownloadProgress(null);
+    }
     if (typeof api.focusWindow === "function") {
       await api.focusWindow();
+    }
+  }
+
+  function openSaleReturnModal(sale) {
+    const lines = (sale.items || []).map((it) => {
+      const qty = Number(it.qty) || 0;
+      const ret = Number(it.returned_qty) || 0;
+      const rem = saleLineSoldRemaining({
+        qty,
+        returned_qty: ret
+      });
+      return {
+        id: it.id,
+        product_id: it.product_id,
+        product_name: it.product_name,
+        unit: String(it.unit || "dona").trim() || "dona",
+        qty,
+        returned_qty: ret,
+        remainingInput: rem === 0 ? "0" : formatQtyPlain(rem)
+      };
+    });
+    setSaleReturnDraftLines(lines);
+    setSaleReturnModal({ sale });
+  }
+
+  function closeSaleReturnModal() {
+    setSaleReturnModal(null);
+    setSaleReturnDraftLines([]);
+  }
+
+  async function handleSaveSaleReturn() {
+    if (!saleReturnModal || typeof api?.applySaleLineReturns !== "function") {
+      pushNotice("Qaytarish saqlash mavjud emas.");
+      return;
+    }
+    const saleId = saleReturnModal.sale.id;
+    const lines = [];
+    for (const l of saleReturnDraftLines) {
+      if (l.product_id == null) continue;
+      const maxRem = roundQty3(l.qty - l.returned_qty);
+      const rem = parseRemainingQtyForReturn(l.unit, l.remainingInput, maxRem);
+      if (rem == null) {
+        pushNotice(
+          `"${l.product_name}" uchun qolgan miqdor noto'g'ri (0 dan ${formatQtyPlain(maxRem)} gacha).`
+        );
+        return;
+      }
+      lines.push({ sale_item_id: l.id, remaining_qty: rem });
+    }
+    if (!lines.length) {
+      pushNotice("Ombordagi mahsulot qatorlari yo'q — qaytarish mumkin emas.");
+      return;
+    }
+    const res = await api.applySaleLineReturns({ sale_id: saleId, lines });
+    if (!res.ok) {
+      pushNotice(res.error || "Xato");
+      return;
+    }
+    pushNotice("Qaytarish saqlandi.");
+    setReceiptOptionsModal((prev) =>
+      prev && Number(prev.sale?.id) === Number(saleId) ? null : prev
+    );
+    closeSaleReturnModal();
+    await refreshMainData();
+    const cid = Number(selectedCustomerId);
+    if (cid) {
+      const salesRows = await api.listSalesByCustomer(cid, 500);
+      setCustomerSales(salesRows);
     }
   }
 
@@ -1952,6 +2142,7 @@ export default function App() {
       ) : null}
 
       <div
+        ref={appMainRef}
         className={`app-main${activeTab === "customers" ? " app-main--customers-fit" : ""}`}
       >
       {aboutModalOpen ? (
@@ -2148,6 +2339,109 @@ export default function App() {
                 onClick={() => void confirmCustomerDelete()}
               >
                 O&apos;chirish
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {saleReturnModal ? (
+        <div
+          className="modal-backdrop modal-backdrop--sale-return"
+          role="presentation"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) {
+              closeSaleReturnModal();
+            }
+          }}
+        >
+          <div
+            className="modal-dialog modal-dialog--sale-return"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="sale-return-title"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <h3 id="sale-return-title" className="modal-title">
+              Savdo №{saleReturnModal.sale.id} — qaytarish
+            </h3>
+            <p className="modal-body-text muted">
+              Mijozda qolgan miqdorni kamaytiring yoki &quot;Qaytarish&quot; bilan qatorni to&apos;liq
+              yoping. Ombordagi mahsulotlar avtomatik qo&apos;shiladi.
+            </p>
+            <div className="sale-return-table-wrap">
+              <table className="sale-return-table">
+                <thead>
+                  <tr>
+                    <th>Mahsulot</th>
+                    <th>Mijozda (qolgan)</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {saleReturnDraftLines.map((line) => {
+                    const disabled = line.product_id == null;
+                    return (
+                      <tr key={line.id}>
+                        <td>
+                          {line.product_name}
+                          {disabled ? (
+                            <span className="muted sale-return-adhoc-mark"> (ombor yo&apos;q)</span>
+                          ) : null}
+                        </td>
+                        <td>
+                          {disabled ? (
+                            <span className="muted">—</span>
+                          ) : (
+                            <input
+                              type="text"
+                              inputMode="decimal"
+                              className="sale-return-qty-input"
+                              autoComplete="off"
+                              value={line.remainingInput}
+                              onChange={(e) =>
+                                setSaleReturnDraftLines((prev) =>
+                                  prev.map((l) =>
+                                    l.id === line.id
+                                      ? { ...l, remainingInput: e.target.value }
+                                      : l
+                                  )
+                                )
+                              }
+                            />
+                          )}
+                        </td>
+                        <td className="sale-return-actions-cell">
+                          {disabled ? (
+                            <span className="muted">—</span>
+                          ) : (
+                            <button
+                              type="button"
+                              className="btn tiny secondary"
+                              onClick={() =>
+                                setSaleReturnDraftLines((prev) =>
+                                  prev.map((l) =>
+                                    l.id === line.id ? { ...l, remainingInput: "0" } : l
+                                  )
+                                )
+                              }
+                            >
+                              Qaytarish
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="btn secondary" onClick={closeSaleReturnModal}>
+                Bekor qilish
+              </button>
+              <button type="button" className="btn" onClick={() => void handleSaveSaleReturn()}>
+                Saqlash
               </button>
             </div>
           </div>
@@ -2730,7 +3024,11 @@ export default function App() {
             ) : null}
             {selectedCustomerId && (
               <div className="customer-chat-stack">
-              <div className="chat-scroll telegram-chat" aria-label="Savdo, qoralama va xabarlar tarixi">
+              <div
+                ref={customerChatScrollRef}
+                className="chat-scroll telegram-chat"
+                aria-label="Savdo, qoralama va xabarlar tarixi"
+              >
                 {selectedCustomerBalance > 0 ? (
                   <div className="chat-debt-banner" role="status">
                     Umumiy qarz:{" "}
@@ -2769,13 +3067,16 @@ export default function App() {
                     </div>
                     <div className="chat-bubble-body">
                       <ul className="chat-line-list">
-                        {sale.items.map((item) => (
-                          <li key={item.id}>
-                            {item.product_name} — {formatQtyPlain(item.qty)} ×{" "}
-                            {formatMoney(item.unit_price_minor)} ={" "}
-                            {formatMoney(item.line_total_minor)}
-                          </li>
-                        ))}
+                        {sale.items.map((item) => {
+                          const soldRem = saleLineSoldRemaining(item);
+                          return (
+                            <li key={item.id}>
+                              {item.product_name} — {formatQtyPlain(soldRem)} ×{" "}
+                              {formatMoney(item.unit_price_minor)} ={" "}
+                              {formatMoney(item.line_total_minor)}
+                            </li>
+                          );
+                        })}
                       </ul>
                     </div>
                     <div className="chat-bubble-footer">
@@ -2791,6 +3092,21 @@ export default function App() {
                         </div>
                       ) : null}
                     </div>
+                    {sale.items.some((it) => (Number(it.returned_qty) || 0) > 0) ? (
+                      <div className="chat-bubble-returns">
+                        <p className="chat-bubble-returns-title">Qaytarilgan</p>
+                        <ul className="chat-line-list">
+                          {sale.items
+                            .filter((it) => (Number(it.returned_qty) || 0) > 0)
+                            .map((it) => (
+                              <li key={`ret-${it.id}`}>
+                                {it.product_name} —{" "}
+                                {formatStockQtyWithUnit(it.returned_qty, it.unit)}
+                              </li>
+                            ))}
+                        </ul>
+                      </div>
+                    ) : null}
                     <div className="chat-bubble-actions">
                       <button
                         type="button"
@@ -2798,6 +3114,15 @@ export default function App() {
                         onClick={() => setReceiptOptionsModal({ sale })}
                       >
                         Chop etish
+                      </button>
+                      <button
+                        type="button"
+                        className="btn tiny chat-bubble-edit-btn"
+                        title="Qaytarish va miqdorni tahrirlash"
+                        onClick={() => openSaleReturnModal(sale)}
+                      >
+                        <Pencil size={14} strokeWidth={2} aria-hidden />
+                        Tahrirlash
                       </button>
                     </div>
                   </div>
@@ -3479,13 +3804,16 @@ export default function App() {
                 </summary>
                 <div className="history-content">
                   <ul className="small-list">
-                    {sale.items.map((item) => (
-                      <li key={item.id}>
-                        {item.product_name} - {formatQtyPlain(item.qty)} x{" "}
-                        {formatMoney(item.unit_price_minor)} ={" "}
-                        {formatMoney(item.line_total_minor)}
-                      </li>
-                    ))}
+                    {sale.items.map((item) => {
+                      const rem = saleLineSoldRemaining(item);
+                      return (
+                        <li key={item.id}>
+                          {item.product_name} - {formatQtyPlain(rem)} x{" "}
+                          {formatMoney(item.unit_price_minor)} ={" "}
+                          {formatMoney(item.line_total_minor)}
+                        </li>
+                      );
+                    })}
                   </ul>
                   {owe > 0 ? (
                     <p className="history-payment-note">

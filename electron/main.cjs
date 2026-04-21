@@ -10,7 +10,8 @@ const {
 } = require("./licenseClient.cjs");
 const {
   checkForUpdatesInteractive,
-  checkForUpdatesOnStartupQuiet
+  checkForUpdatesOnStartupQuiet,
+  markUserInvokedUpdateCheck
 } = require("./updater.cjs");
 
 function resolveLicenseWorkerUrl() {
@@ -133,7 +134,10 @@ function registerIpc() {
     };
   });
 
-  ipcMain.handle("app:check-for-updates", async () => checkForUpdatesInteractive(mainWindow));
+  ipcMain.handle("app:check-for-updates", async () => {
+    markUserInvokedUpdateCheck();
+    return checkForUpdatesInteractive(mainWindow);
+  });
 
   ipcMain.handle("dashboard:get", async () => dbService.getDashboard());
   ipcMain.handle("seller-profile:get", async () => dbService.getSellerProfile());
@@ -164,6 +168,9 @@ function registerIpc() {
   ipcMain.handle("sale-drafts:delete", async (_, draftId) => dbService.deleteSaleDraft(draftId));
 
   ipcMain.handle("sales:create", async (_, payload) => dbService.createSale(payload));
+  ipcMain.handle("sales:apply-line-returns", async (_, payload) =>
+    dbService.applySaleLineReturns(payload)
+  );
   ipcMain.handle("sales:list", async (_, limit) => dbService.listSales(limit));
   ipcMain.handle("sales:listByCustomer", async (_, customerId, limit) =>
     dbService.listSalesByCustomer(customerId, limit)
