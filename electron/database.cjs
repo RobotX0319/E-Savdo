@@ -368,6 +368,26 @@ class DatabaseService {
       }
       this.setUserVersion(11);
     }
+    if (this.getUserVersion() < 12) {
+      const pCols = this.selectAll("PRAGMA table_info(products);");
+      if (!pCols.some((c) => c.name === "low_stock_threshold")) {
+        this.db.exec(
+          "ALTER TABLE products ADD COLUMN low_stock_threshold REAL NOT NULL DEFAULT 5;"
+        );
+      }
+      this.setUserVersion(12);
+    }
+    if (this.getUserVersion() < 13) {
+      let sCols = this.selectAll("PRAGMA table_info(sales);");
+      if (!sCols.some((c) => c.name === "balance_before_minor")) {
+        this.db.exec("ALTER TABLE sales ADD COLUMN balance_before_minor INTEGER;");
+      }
+      sCols = this.selectAll("PRAGMA table_info(sales);");
+      if (!sCols.some((c) => c.name === "balance_after_minor")) {
+        this.db.exec("ALTER TABLE sales ADD COLUMN balance_after_minor INTEGER;");
+      }
+      this.setUserVersion(13);
+    }
   }
 
   getUserVersion() {
@@ -435,6 +455,7 @@ class DatabaseService {
         p.purchase_price_minor,
         p.sale_price_minor,
         p.is_active,
+        p.low_stock_threshold,
         p.created_at,
         p.updated_at,
         COALESCE(b.quantity, 0) AS stock_qty
@@ -447,14 +468,16 @@ class DatabaseService {
   createProduct(payload) {
     const now = this.now();
     const initialQty = Number(payload.initial_qty || 0);
+    const lowTh = Math.max(0, Number(payload.low_stock_threshold ?? 5));
     this.execute(
-      `INSERT INTO products (name, unit, purchase_price_minor, sale_price_minor, is_active, created_at, updated_at)
-       VALUES (?, ?, ?, ?, 1, ?, ?);`,
+      `INSERT INTO products (name, unit, purchase_price_minor, sale_price_minor, is_active, low_stock_threshold, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 1, ?, ?, ?);`,
       [
         payload.name.trim(),
         payload.unit?.trim() || "dona",
         Number(payload.purchase_price_minor || 0),
         Number(payload.sale_price_minor || 0),
+        Number.isFinite(lowTh) ? lowTh : 5,
         now,
         now
       ]
@@ -486,9 +509,10 @@ class DatabaseService {
   updateProduct(payload) {
     const now = this.now();
     const id = Number(payload.id);
+    const lowTh = Math.max(0, Number(payload.low_stock_threshold ?? 5));
     this.execute(
       `UPDATE products
-       SET name = ?, unit = ?, purchase_price_minor = ?, sale_price_minor = ?, is_active = ?, updated_at = ?
+       SET name = ?, unit = ?, purchase_price_minor = ?, sale_price_minor = ?, is_active = ?, low_stock_threshold = ?, updated_at = ?
        WHERE id = ?;`,
       [
         payload.name.trim(),
@@ -496,6 +520,7 @@ class DatabaseService {
         Number(payload.purchase_price_minor || 0),
         Number(payload.sale_price_minor || 0),
         payload.is_active ? 1 : 0,
+        Number.isFinite(lowTh) ? lowTh : 5,
         now,
         id
       ]
@@ -538,6 +563,20 @@ class DatabaseService {
     `,
       [Number(payload.id)]
     );
+  }
+
+  /** Savdoga tegishli tarix saqlanishi uchun mahsulotni bazadan emas, ro'yxatdan olib tashlash (nofaol) */
+  deactivateProduct(productId) {
+    const id = Number(productId);
+    if (!Number.isFinite(id) || id <= 0) {
+      return { ok: false, error: "invalid_id" };
+    }
+    const row = this.selectOne("SELECT id FROM products WHERE id = ?;", [id]);
+    if (!row) return { ok: false, error: "not_found" };
+    const now = this.now();
+    this.execute("UPDATE products SET is_active = 0, updated_at = ? WHERE id = ?;", [now, id]);
+    this.persist();
+    return { ok: true };
   }
 
   adjustInventory(payload) {
@@ -1060,6 +1099,7 @@ class DatabaseService {
   completeSaleTransaction(customerId, note, soldAt, normalizedItems, total, now, paidMinor) {
     const paid = this.roundSomInteger(paidMinor);
     const paidClamped = Math.min(Math.max(0, paid), total);
+    const balanceBefore = this.getCustomerOutstandingBalanceMinor(customerId);
     this.execute(
       `INSERT INTO sales (customer_id, sold_at, status, total_minor, paid_minor, note, created_at)
        VALUES (?, ?, 'completed', ?, ?, ?, ?);`,
@@ -1106,6 +1146,11 @@ class DatabaseService {
         [item.product_id, -Number(item.qty), saleId, now]
       );
     }
+    const balanceAfter = this.getCustomerOutstandingBalanceMinor(customerId);
+    this.execute(
+      `UPDATE sales SET balance_before_minor = ?, balance_after_minor = ? WHERE id = ?;`,
+      [balanceBefore, balanceAfter, saleId]
+    );
     return saleId;
   }
 
@@ -1592,7 +1637,9 @@ class DatabaseService {
         s.status,
         s.total_minor,
         s.paid_minor,
-        s.note
+        s.note,
+        s.balance_before_minor,
+        s.balance_after_minor
       FROM sales s
       LEFT JOIN customers c ON c.id = s.customer_id
       ORDER BY s.sold_at DESC
@@ -1641,7 +1688,9 @@ class DatabaseService {
         s.status,
         s.total_minor,
         s.paid_minor,
-        s.note
+        s.note,
+        s.balance_before_minor,
+        s.balance_after_minor
       FROM sales s
       LEFT JOIN customers c ON c.id = s.customer_id
       WHERE s.customer_id = ?
@@ -1710,10 +1759,11 @@ class DatabaseService {
 
     const stockAlerts = this.selectAll(
       `
-      SELECT p.id, p.name, b.quantity
+      SELECT p.id, p.name, b.quantity, p.low_stock_threshold
       FROM inventory_balances b
       JOIN products p ON p.id = b.product_id
-      WHERE p.is_active = 1 AND b.quantity <= 5
+      WHERE p.is_active = 1
+        AND b.quantity <= COALESCE(p.low_stock_threshold, 5)
       ORDER BY b.quantity ASC, p.name ASC;
     `
     );
@@ -1958,8 +2008,8 @@ class DatabaseService {
         }
 
         this.execute(
-          `INSERT INTO products (name, unit, purchase_price_minor, sale_price_minor, is_active, created_at, updated_at)
-           VALUES (?, ?, ?, ?, 1, ?, ?);`,
+          `INSERT INTO products (name, unit, purchase_price_minor, sale_price_minor, is_active, low_stock_threshold, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 1, 5, ?, ?);`,
           [name, unit, insertPurchase, insertSalePrice, now, now]
         );
         const productId = this.getLastInsertId();

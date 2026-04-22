@@ -253,6 +253,39 @@ function addDaysIso(days) {
   return d.toISOString();
 }
 
+/** Barcha adminlarga yuborilgan xabarlar — tasdiq/rad qilganda hammasida tugmalar olib tashlanadi */
+async function editAllAdminRequestMessages(token, env, requestId, newText, parseMode) {
+  const raw = await env.LICENSE_KV.get(`pending_msgs:${requestId}`);
+  if (!raw) return;
+  let refs = [];
+  try {
+    refs = JSON.parse(raw);
+    if (!Array.isArray(refs)) refs = [];
+  } catch {
+    return;
+  }
+  const payloadBase = {
+    text: newText,
+    reply_markup: { inline_keyboard: [] },
+  };
+  if (parseMode) payloadBase.parse_mode = parseMode;
+
+  for (const ref of refs) {
+    const chatId = ref.chat_id ?? ref.chatId;
+    const mid = ref.message_id ?? ref.messageId;
+    if (chatId == null || mid == null) continue;
+    try {
+      await tgApi(token, "editMessageText", {
+        chat_id: chatId,
+        message_id: mid,
+        ...payloadBase,
+      });
+    } catch (e) {
+      /* xabar o'chirilgan / kirish yo'q */
+    }
+  }
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -445,21 +478,6 @@ export default {
         }
 
         const requestId = crypto.randomUUID();
-        const pending = {
-          requestId,
-          machineId,
-          plan,
-          contact,
-          fullName,
-          createdAt: nowIso(),
-          status: "pending",
-        };
-        await env.LICENSE_KV.put(
-          `pending:${requestId}`,
-          JSON.stringify(pending),
-          { expirationTtl: 60 * 60 * 24 * 14 }
-        );
-
         const planLabel = PLANS[plan].label;
         const text =
           `📋 *E-Savdo obuna so'rovi*\n\n` +
@@ -469,8 +487,25 @@ export default {
           `*Kontakt:* ${escapeTgMarkdown(contact || "—")}\n` +
           `*So'rov ID:* \`${requestId}\``;
 
+        const pending = {
+          requestId,
+          machineId,
+          plan,
+          contact,
+          fullName,
+          createdAt: nowIso(),
+          status: "pending",
+          telegramBroadcastText: text,
+        };
+        await env.LICENSE_KV.put(
+          `pending:${requestId}`,
+          JSON.stringify(pending),
+          { expirationTtl: 60 * 60 * 24 * 14 }
+        );
+
+        const messageRefs = [];
         for (const adminId of adminIds) {
-          await tgApi(token, "sendMessage", {
+          const sent = await tgApi(token, "sendMessage", {
             chat_id: adminId,
             text,
             parse_mode: "Markdown",
@@ -483,7 +518,13 @@ export default {
               ],
             },
           });
+          if (sent && sent.message_id != null && sent.chat && sent.chat.id != null) {
+            messageRefs.push({ chat_id: sent.chat.id, message_id: sent.message_id });
+          }
         }
+        await env.LICENSE_KV.put(`pending_msgs:${requestId}`, JSON.stringify(messageRefs), {
+          expirationTtl: 60 * 60 * 24 * 14,
+        });
 
         return json({ ok: true, requestId, message: "admin_telegramga_yuborildi" });
       }
@@ -566,11 +607,9 @@ export default {
               callback_query_id: cq.id,
               text: "Tasdiqlandi",
             });
-            await tgApi(token, "editMessageText", {
-              chat_id: cq.message.chat.id,
-              message_id: cq.message.message_id,
-              text: `${cq.message.text}\n\n✅ Tasdiqlandi — ${PLANS[plan].label}, muddati: ${expiresAt.slice(0, 10)}`,
-            });
+            const baseOk = pending.telegramBroadcastText || cq.message.text;
+            const newTextOk = `${baseOk}\n\n✅ Tasdiqlandi — ${PLANS[plan].label}, muddati: ${expiresAt.slice(0, 10)}`;
+            await editAllAdminRequestMessages(token, env, requestId, newTextOk, "Markdown");
           } else if (action === "no") {
             pending.status = "rejected";
             pending.rejectedAt = nowIso();
@@ -581,11 +620,9 @@ export default {
               callback_query_id: cq.id,
               text: "Rad etildi",
             });
-            await tgApi(token, "editMessageText", {
-              chat_id: cq.message.chat.id,
-              message_id: cq.message.message_id,
-              text: `${cq.message.text}\n\n❌ Rad etildi`,
-            });
+            const baseNo = pending.telegramBroadcastText || cq.message.text;
+            const newTextNo = `${baseNo}\n\n❌ Rad etildi`;
+            await editAllAdminRequestMessages(token, env, requestId, newTextNo, "Markdown");
           }
         }
 

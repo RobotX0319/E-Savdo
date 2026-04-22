@@ -41,6 +41,7 @@ contextBridge.exposeInMainWorld("api", {
   listProducts: () => ipcRenderer.invoke("products:list"),
   createProduct: (payload) => ipcRenderer.invoke("products:create", payload),
   updateProduct: (payload) => ipcRenderer.invoke("products:update", payload),
+  deactivateProduct: (id) => ipcRenderer.invoke("products:deactivate", id),
 
   adjustInventory: (payload) => ipcRenderer.invoke("inventory:adjust", payload),
 
@@ -72,6 +73,10 @@ contextBridge.exposeInMainWorld("api", {
   exportInventoryData: () => ipcRenderer.invoke("data:export-inventory"),
   backupData: () => ipcRenderer.invoke("data:backup"),
   restoreDatabaseBackup: () => ipcRenderer.invoke("data:restore-backup"),
+
+  listWarehouses: () => ipcRenderer.invoke("warehouses:list"),
+  switchWarehouse: (warehouseId) => ipcRenderer.invoke("warehouses:switch", warehouseId),
+  createWarehouse: (payload) => ipcRenderer.invoke("warehouses:create", payload),
 
   licenseGetStatus: () => ipcRenderer.invoke("license:get-status"),
   licenseSubmitRequest: (payload) => ipcRenderer.invoke("license:submit-request", payload)

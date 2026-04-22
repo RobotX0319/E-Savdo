@@ -3,6 +3,7 @@ const fs = require("fs");
 const { app, BrowserWindow, ipcMain, dialog, Menu } = require("electron");
 const XLSX = require("xlsx");
 const DatabaseService = require("./database.cjs");
+const warehouses = require("./warehouses.cjs");
 const {
   getOrCreateMachineId,
   verifyRemoteWithRetry,
@@ -155,6 +156,86 @@ function registerIpc() {
 
   ipcMain.handle("app:install-pending-update", async () => installPendingUpdate(mainWindow));
 
+  ipcMain.handle("warehouses:list", async () => {
+    const userData = app.getPath("userData");
+    return { ok: true, ...warehouses.getListForRenderer(userData) };
+  });
+
+  ipcMain.handle("warehouses:switch", async (_, warehouseId) => {
+    const userData = app.getPath("userData");
+    const w = warehouses.findWarehouseFile(userData, warehouseId);
+    if (!w) return { ok: false, error: "not_found" };
+    const newPath = warehouses.getDbFilePathForWarehouse(userData, w);
+    if (appDbPath && path.resolve(newPath) === path.resolve(appDbPath)) {
+      return { ok: true, already: true, ...warehouses.getListForRenderer(userData) };
+    }
+    const prev = dbService;
+    try {
+      const next = new DatabaseService(newPath);
+      await next.init();
+      if (prev) prev.close();
+      dbService = next;
+      appDbPath = newPath;
+      const setr = warehouses.setActiveWarehouseId(userData, w.id);
+      if (!setr.ok) {
+        return { ok: false, error: setr.error || "active_save_failed" };
+      }
+      return { ok: true, ...warehouses.getListForRenderer(userData) };
+    } catch (e) {
+      return { ok: false, error: e?.message || String(e) };
+    }
+  });
+
+  ipcMain.handle("warehouses:create", async (_, payload) => {
+    const name = String(payload?.name || "").trim();
+    if (!name) return { ok: false, error: "empty_name" };
+    if (name.length > 120) return { ok: false, error: "name_too_long" };
+    const userData = app.getPath("userData");
+    const id = warehouses.newWarehouseId();
+    const file = `${id}.sqlite`;
+    const fullPath = path.join(warehouses.getWarehousesDir(userData), file);
+    if (fs.existsSync(fullPath)) {
+      return { ok: false, error: "file_exists" };
+    }
+    const prevDb = dbService;
+    const prevPath = appDbPath;
+    try {
+      const next = new DatabaseService(fullPath);
+      await next.init();
+      if (prevDb) prevDb.close();
+      dbService = next;
+      appDbPath = fullPath;
+      warehouses.addWarehouseToRegistry(userData, { id, name, file });
+      return { ok: true, ...warehouses.getListForRenderer(userData) };
+    } catch (e) {
+      try {
+        if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath);
+      } catch {
+        /* ignore */
+      }
+      if (dbService && appDbPath === fullPath) {
+        try {
+          dbService.close();
+        } catch {
+          /* ignore */
+        }
+        dbService = null;
+        appDbPath = null;
+      }
+      if (prevPath) {
+        try {
+          const recover = new DatabaseService(prevPath);
+          await recover.init();
+          dbService = recover;
+          appDbPath = prevPath;
+        } catch {
+          /* ignore */
+        }
+      }
+      return { ok: false, error: e?.message || String(e) };
+    }
+  });
+
   ipcMain.handle("dashboard:get", async () => dbService.getDashboard());
   ipcMain.handle("seller-profile:get", async () => dbService.getSellerProfile());
   ipcMain.handle("seller-profile:update", async (_, payload) => dbService.updateSellerProfile(payload));
@@ -162,6 +243,7 @@ function registerIpc() {
   ipcMain.handle("products:list", async () => dbService.listProducts());
   ipcMain.handle("products:create", async (_, payload) => dbService.createProduct(payload));
   ipcMain.handle("products:update", async (_, payload) => dbService.updateProduct(payload));
+  ipcMain.handle("products:deactivate", async (_, id) => dbService.deactivateProduct(id));
 
   ipcMain.handle("inventory:adjust", async (_, payload) => dbService.adjustInventory(payload));
 
@@ -413,7 +495,8 @@ function registerIpc() {
 app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
 
-  appDbPath = path.join(app.getPath("userData"), "e-savdo.sqlite");
+  const wstate = warehouses.prepareOnStartup(app.getPath("userData"));
+  appDbPath = wstate.appDbPath;
   dbService = new DatabaseService(appDbPath);
   await dbService.init();
   registerIpc();

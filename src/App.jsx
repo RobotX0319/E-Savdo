@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { Info, Pencil, Trash2 } from "lucide-react";
-import { copySaleReceiptAsImage, printSaleReceipt } from "./receiptUtils.js";
+import {
+  copySaleDraftAsImage,
+  copySaleReceiptAsImage,
+  printSaleDraft,
+  printSaleReceipt
+} from "./receiptUtils.js";
 import LicenseGate from "./LicenseGate.jsx";
 import {
   exceedsStock,
@@ -31,8 +36,15 @@ const emptyProductForm = {
   purchase_price_minor: "0",
   sale_price_minor: "",
   initial_qty: "0",
-  edit_stock_qty: ""
+  edit_stock_qty: "",
+  low_stock_threshold: "5"
 };
+
+function productLowStockThreshold(p) {
+  const t = Number(p?.low_stock_threshold);
+  if (Number.isFinite(t) && t >= 0) return t;
+  return 5;
+}
 
 const emptySellerProfile = {
   shop_name: "",
@@ -454,6 +466,7 @@ export default function App() {
   const [deleteCustomerModal, setDeleteCustomerModal] = useState(null);
   const [customerEditModal, setCustomerEditModal] = useState(null);
   const [receiptOptionsModal, setReceiptOptionsModal] = useState(null);
+  const [draftReceiptModal, setDraftReceiptModal] = useState(null);
   const [saleReturnModal, setSaleReturnModal] = useState(null);
   const [saleReturnDraftLines, setSaleReturnDraftLines] = useState([]);
   const [aboutModalOpen, setAboutModalOpen] = useState(false);
@@ -467,6 +480,11 @@ export default function App() {
   const customerChatScrollRef = useRef(null);
   const dbMenuRef = useRef(null);
   const [dbMenuOpen, setDbMenuOpen] = useState(false);
+  const [warehousesList, setWarehousesList] = useState([]);
+  const [activeWarehouseId, setActiveWarehouseId] = useState(null);
+  const [warehouseBusy, setWarehouseBusy] = useState(false);
+  const [newWarehouseModalOpen, setNewWarehouseModalOpen] = useState(false);
+  const [newWarehouseName, setNewWarehouseName] = useState("");
 
   const customerSalesChronological = useMemo(
     () => [...customerSales].reverse(),
@@ -742,7 +760,12 @@ export default function App() {
   }, [customers, selectedCustomerId]);
 
   const lowStockProducts = useMemo(
-    () => products.filter((item) => Number(item.stock_qty) <= 5 && Number(item.is_active) === 1),
+    () =>
+      products.filter(
+        (item) =>
+          Number(item.is_active) === 1 &&
+          Number(item.stock_qty) <= productLowStockThreshold(item)
+      ),
     [products]
   );
 
@@ -776,7 +799,9 @@ export default function App() {
         rows = rows.filter((p) => Number(p.is_active) !== 1);
         break;
       case "low_stock":
-        rows = rows.filter((p) => Number(p.is_active) === 1 && Number(p.stock_qty) <= 5);
+        rows = rows.filter(
+          (p) => Number(p.is_active) === 1 && Number(p.stock_qty) <= productLowStockThreshold(p)
+        );
         break;
       case "no_stock":
         rows = rows.filter((p) => Number(p.stock_qty) <= 0);
@@ -880,6 +905,24 @@ export default function App() {
     }, 2500);
   }
 
+  function resetUiAfterDbContextChange() {
+    setSelectedCustomerId(null);
+    setCustomerSales([]);
+    setCustomerDrafts([]);
+    setCustomerChatMessages([]);
+    setCustomerChatInput("");
+    setEditingDraftId(null);
+    setDeleteDraftModal(null);
+    setCartItems([]);
+    setSalePickedCustomerId(null);
+    setSaleCustomerName("");
+    setSaleCustomerPhone("");
+    setSaleCustomerAddress("");
+    setProductSearchQuery("");
+    setEditingProductId(null);
+    setProductForm(emptyProductForm);
+  }
+
   async function refreshMainData() {
     if (!api) return;
     const [dashboardData, productList, customerList, salesList] = await Promise.all([
@@ -915,12 +958,79 @@ export default function App() {
     }
     setLoading(true);
     try {
+      if (typeof api.listWarehouses === "function") {
+        const w = await api.listWarehouses();
+        if (w?.ok) {
+          setWarehousesList(w.warehouses || []);
+          setActiveWarehouseId(w.activeId != null ? w.activeId : null);
+        }
+      }
       await refreshMainData();
       await loadReport();
     } catch (error) {
       pushNotice(`Yuklashda xatolik: ${error.message}`);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleWarehouseChange(warehouseId) {
+    if (!api?.switchWarehouse || warehouseId == null || warehouseId === "") return;
+    if (String(warehouseId) === String(activeWarehouseId)) return;
+    setWarehouseBusy(true);
+    try {
+      const r = await api.switchWarehouse(warehouseId);
+      if (!r?.ok) {
+        pushNotice(String(r?.error || "Ombor almashmadi."));
+        return;
+      }
+      setWarehousesList(r.warehouses || []);
+      setActiveWarehouseId(r.activeId != null ? r.activeId : warehouseId);
+      resetUiAfterDbContextChange();
+      await refreshMainData();
+      await loadReport();
+      pushNotice("Ombor o'zgartirildi.");
+    } catch (error) {
+      pushNotice(`Ombor: ${error.message || "xato"}`);
+    } finally {
+      setWarehouseBusy(false);
+    }
+  }
+
+  async function submitNewWarehouse(event) {
+    event?.preventDefault?.();
+    const name = newWarehouseName.trim();
+    if (!name) {
+      pushNotice("Ombor nomini kiriting.");
+      return;
+    }
+    if (!api?.createWarehouse) {
+      pushNotice("Bu funksiya faqat Electron dasturida.");
+      return;
+    }
+    setWarehouseBusy(true);
+    try {
+      const r = await api.createWarehouse({ name });
+      if (!r?.ok) {
+        if (r?.error === "empty_name") {
+          pushNotice("Ombor nomini kiriting.");
+        } else {
+          pushNotice(String(r?.error || "Ombor yaratilmadi."));
+        }
+        return;
+      }
+      setWarehousesList(r.warehouses || []);
+      setActiveWarehouseId(r.activeId);
+      setNewWarehouseModalOpen(false);
+      setNewWarehouseName("");
+      resetUiAfterDbContextChange();
+      await refreshMainData();
+      await loadReport();
+      pushNotice("Yangi ombor yaratildi va tanlandi.");
+    } catch (error) {
+      pushNotice(`Ombor: ${error.message || "xato"}`);
+    } finally {
+      setWarehouseBusy(false);
     }
   }
 
@@ -1082,7 +1192,9 @@ export default function App() {
       deleteCustomerModal ||
       customerEditModal ||
       receiptOptionsModal ||
-      saleReturnModal;
+      draftReceiptModal ||
+      saleReturnModal ||
+      newWarehouseModalOpen;
     if (!anyModal) return;
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
@@ -1091,11 +1203,13 @@ export default function App() {
         e.preventDefault();
         if (aboutModalOpen) setAboutModalOpen(false);
         else if (receiptOptionsModal) setReceiptOptionsModal(null);
+        else if (draftReceiptModal) setDraftReceiptModal(null);
         else if (saleReturnModal) {
           setSaleReturnModal(null);
           setSaleReturnDraftLines([]);
         } else if (customerEditModal) setCustomerEditModal(null);
         else if (deleteCustomerModal) setDeleteCustomerModal(null);
+        else if (newWarehouseModalOpen) setNewWarehouseModalOpen(false);
         else setDeleteDraftModal(null);
       }
     };
@@ -1110,7 +1224,9 @@ export default function App() {
     deleteCustomerModal,
     customerEditModal,
     receiptOptionsModal,
-    saleReturnModal
+    draftReceiptModal,
+    saleReturnModal,
+    newWarehouseModalOpen
   ]);
 
   useEffect(() => {
@@ -1143,11 +1259,17 @@ export default function App() {
       pushNotice("Sotuv narxini kiriting.");
       return;
     }
+    const lowTh = Math.max(0, Number(productForm.low_stock_threshold ?? 5));
+    if (!Number.isFinite(lowTh)) {
+      pushNotice("Kam qoldiq chegarasi noto'g'ri.");
+      return;
+    }
     const payload = {
       ...productForm,
       purchase_price_minor: Number(productForm.purchase_price_minor || 0),
       sale_price_minor: Number(productForm.sale_price_minor || 0),
-      initial_qty: Number(productForm.initial_qty || 0)
+      initial_qty: Number(productForm.initial_qty || 0),
+      low_stock_threshold: lowTh
     };
     try {
       if (editingProductId) {
@@ -1165,7 +1287,8 @@ export default function App() {
           sale_price_minor: payload.sale_price_minor,
           id: editingProductId,
           is_active: true,
-          stock_qty: stockNorm
+          stock_qty: stockNorm,
+          low_stock_threshold: lowTh
         });
         pushNotice("Mahsulot yangilandi.");
       } else {
@@ -1192,8 +1315,35 @@ export default function App() {
       edit_stock_qty:
         product.stock_qty !== undefined && product.stock_qty !== null
           ? formatQtyPlain(product.stock_qty)
-          : "0"
+          : "0",
+      low_stock_threshold: formatQtyPlain(
+        product.low_stock_threshold != null && product.low_stock_threshold !== ""
+          ? product.low_stock_threshold
+          : 5
+      )
     });
+  }
+
+  async function handleProductDeactivate() {
+    if (!editingProductId || !api) return;
+    const confirm = await api.showConfirm({
+      title: "Mahsulotni o'chirish",
+      message:
+        "Bu mahsulot ro'yxatdan olib tashlanadi (narx va qoldiqlar saqlanadi, savda tarixi o'zgarishsiz).",
+      detail: "Keyinroq 'Nofaol' filtridan ko'rasiz.",
+      confirmLabel: "O'chirish"
+    });
+    if (!confirm?.ok) return;
+    const result = await api.deactivateProduct(editingProductId);
+    if (!result?.ok) {
+      pushNotice(String(result?.error || "Mahsulot o'chirilmadi."));
+      return;
+    }
+    setProductForm(emptyProductForm);
+    setEditingProductId(null);
+    pushNotice("Mahsulot ro'yxatdan olib tashlandi.");
+    await refreshMainData();
+    await loadReport();
   }
 
   function onSaleCustomerNameChange(value) {
@@ -1737,6 +1887,67 @@ export default function App() {
     restoreRendererFocus();
   }
 
+  function buildDraftPrintPayload(draft) {
+    const dTotal = draftItemsTotalMinor(draft);
+    const dId = Number(draft.id);
+    const pay =
+      dTotal > 0
+        ? Math.min(
+            Math.max(0, roundSomInteger(draftPaymentById[dId] ?? String(dTotal))),
+            dTotal
+          )
+        : 0;
+    const debt = dTotal > 0 ? Math.max(0, dTotal - pay) : 0;
+    const lines = (draft.items || []).map((line) => {
+      const product = line.product_id == null ? null : productMap.get(Number(line.product_id));
+      const productName = product?.name || line.product_name;
+      const u = draftLineStoredUnitMinor(line);
+      const qty = Number(line.qty || 0);
+      const lineTotal = roundSomInteger(u * qty);
+      return { productName, qty, unitPrice: u, lineTotal };
+    });
+    const customerName = selectedCustomer
+      ? String(selectedCustomer.name || "").trim() || "Anonim"
+      : "Anonim";
+    return {
+      id: dId,
+      createdAt: draft.created_at,
+      customerName,
+      lines,
+      totalMinor: dTotal,
+      paidMinor: pay,
+      debtPreviewMinor: debt
+    };
+  }
+
+  function closeDraftReceiptModal() {
+    setDraftReceiptModal(null);
+  }
+
+  function handleDraftReceiptPrint() {
+    if (!draftReceiptModal?.draft) return;
+    const payload = buildDraftPrintPayload(draftReceiptModal.draft);
+    setDraftReceiptModal(null);
+    const res = printSaleDraft(payload, sellerProfileForm);
+    if (!res?.ok) {
+      pushNotice(res?.error || "Chop etish oynasi ochilmadi.");
+    }
+    restoreRendererFocus();
+  }
+
+  async function handleDraftReceiptCopyImage() {
+    if (!draftReceiptModal?.draft) return;
+    const payload = buildDraftPrintPayload(draftReceiptModal.draft);
+    setDraftReceiptModal(null);
+    const res = await copySaleDraftAsImage(payload, sellerProfileForm);
+    if (!res?.ok) {
+      pushNotice(res.error || "Rasm clipboardga yozilmadi.");
+    } else {
+      pushNotice("Qoralama rasmi clipboardga nusxalandi. Ctrl+V bilan qo'ying.");
+    }
+    restoreRendererFocus();
+  }
+
   async function saveCustomerEdit() {
     if (!customerEditModal || !api) return;
     const name = customerEditModal.name.trim();
@@ -1795,10 +2006,16 @@ export default function App() {
       return;
     }
     setEditingDraftId((prev) => (Number(prev) === draftId ? null : prev));
+    setDraftPaymentById((prev) => {
+      const next = { ...prev };
+      delete next[draftId];
+      return next;
+    });
     pushNotice("Qoralama o'chirildi.");
     if (selectedCustomerId) {
       await loadCustomerDrafts(selectedCustomerId);
     }
+    await refreshMainData();
     restoreRendererFocus();
   }
 
@@ -1819,6 +2036,11 @@ export default function App() {
       return;
     }
     setEditingDraftId(null);
+    setDraftPaymentById((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
     pushNotice(`Savdo muvaffaqiyatli saqlandi. #${result.sale_id}`);
     await refreshMainData();
     await loadReport();
@@ -2128,24 +2350,17 @@ export default function App() {
       return;
     }
 
-    setSelectedCustomerId(null);
-    setCustomerSales([]);
-    setCustomerDrafts([]);
-    setCustomerChatMessages([]);
-    setCustomerChatInput("");
-    setEditingDraftId(null);
-    setDeleteDraftModal(null);
-    setCartItems([]);
-    setSalePickedCustomerId(null);
-    setSaleCustomerName("");
-    setSaleCustomerPhone("");
-    setSaleCustomerAddress("");
-    setProductSearchQuery("");
-    setEditingProductId(null);
-    setProductForm(emptyProductForm);
+    resetUiAfterDbContextChange();
 
     await refreshMainData();
     await loadReport();
+    if (typeof api.listWarehouses === "function") {
+      const w = await api.listWarehouses();
+      if (w?.ok) {
+        setWarehousesList(w.warehouses || []);
+        setActiveWarehouseId(w.activeId != null ? w.activeId : null);
+      }
+    }
     pushNotice(`Baza tiklandi: ${result.file}`);
   }
 
@@ -2209,7 +2424,40 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <h1>E-Savdo</h1>
+        <h1 className="topbar-brand">E-Savdo</h1>
+        <div className="topbar-warehouse" aria-label="Ombor">
+          {warehousesList.length > 0 ? (
+            <>
+              <label className="warehouse-select-label" htmlFor="warehouse-select">
+                Ombor
+              </label>
+              <select
+                id="warehouse-select"
+                className="warehouse-select"
+                value={activeWarehouseId != null ? String(activeWarehouseId) : ""}
+                onChange={(e) => void handleWarehouseChange(e.target.value)}
+                disabled={warehouseBusy}
+              >
+                {warehousesList.map((w) => (
+                  <option key={w.id} value={w.id}>
+                    {w.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="btn secondary warehouse-new-btn"
+                disabled={warehouseBusy}
+                onClick={() => {
+                  setNewWarehouseName("");
+                  setNewWarehouseModalOpen(true);
+                }}
+              >
+                + Yangi ombor
+              </button>
+            </>
+          ) : null}
+        </div>
         <div className="topbar-actions">
           <div className="db-menu-wrap" ref={dbMenuRef}>
             <button
@@ -2319,6 +2567,55 @@ export default function App() {
         ref={appMainRef}
         className={`app-main${activeTab === "customers" ? " app-main--customers-fit" : ""}`}
       >
+      {newWarehouseModalOpen ? (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget && !warehouseBusy) {
+              setNewWarehouseModalOpen(false);
+            }
+          }}
+        >
+          <div
+            className="modal-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="new-warehouse-title"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <h3 id="new-warehouse-title" className="modal-title">
+              Yangi ombor
+            </h3>
+            <form className="form" onSubmit={(e) => void submitNewWarehouse(e)}>
+              <label>
+                Ombor nomi
+                <input
+                  autoFocus
+                  value={newWarehouseName}
+                  onChange={(e) => setNewWarehouseName(e.target.value)}
+                  maxLength={120}
+                  disabled={warehouseBusy}
+                />
+              </label>
+              <p className="modal-body-text muted">Har bir ombor uchun alohida hisob fayli yaratiladi.</p>
+              <div className="modal-actions">
+                <button
+                  type="button"
+                  className="btn secondary"
+                  disabled={warehouseBusy}
+                  onClick={() => setNewWarehouseModalOpen(false)}
+                >
+                  Bekor
+                </button>
+                <button type="submit" className="btn" disabled={warehouseBusy}>
+                  Yaratish
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
       {aboutModalOpen ? (
         <div
           className="modal-backdrop"
@@ -2670,6 +2967,58 @@ export default function App() {
         </div>
       ) : null}
 
+      {draftReceiptModal ? (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) {
+              closeDraftReceiptModal();
+            }
+          }}
+        >
+          <div
+            className="modal-dialog modal-dialog--receipt-actions"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="draft-receipt-title"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <h3 id="draft-receipt-title" className="modal-title">
+              Qoralamani chop etish
+            </h3>
+            <p className="modal-body-text">
+              Qoralama <strong>Q#{draftReceiptModal.draft.id}</strong> — qanday chiqarasiz?
+            </p>
+            <div className="receipt-action-grid">
+              <button
+                type="button"
+                className="btn receipt-action-btn"
+                onClick={() => handleDraftReceiptPrint()}
+              >
+                Printer
+              </button>
+              <button
+                type="button"
+                className="btn secondary receipt-action-btn"
+                onClick={() => void handleDraftReceiptCopyImage()}
+              >
+                Rasm (xotira / clipboard)
+              </button>
+            </div>
+            <p className="modal-body-text receipt-action-hint muted">
+              <strong>Printer</strong> — tizim chop etish oynasi.{" "}
+              <strong>Rasm</strong> — jadval shaklidagi qoralama PNG sifatida clipboardga.
+            </p>
+            <div className="modal-actions">
+              <button type="button" className="btn secondary" onClick={closeDraftReceiptModal}>
+                Bekor qilish
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {customerEditModal ? (
         <div
           className="modal-backdrop"
@@ -2994,6 +3343,18 @@ export default function App() {
                       />
                     </label>
                   )}
+                  <label>
+                    Kam qoldiq eslatmasi (chegara)
+                    <input
+                      type="number"
+                      min="0"
+                      step={isFractionalMeasureUnit(productForm.unit) ? "0.001" : "1"}
+                      value={productForm.low_stock_threshold}
+                      onChange={(e) =>
+                        setProductForm({ ...productForm, low_stock_threshold: e.target.value })
+                      }
+                    />
+                  </label>
                   <div className="row">
                     <button className="btn" type="submit">
                       {editingProductId ? "Saqlash" : "Qo'shish"}
@@ -3008,6 +3369,15 @@ export default function App() {
                         }}
                       >
                         Bekor qilish
+                      </button>
+                    )}
+                    {editingProductId && (
+                      <button
+                        className="btn danger"
+                        type="button"
+                        onClick={() => void handleProductDeactivate()}
+                      >
+                        Mahsulotni o&apos;chirish
                       </button>
                     )}
                   </div>
@@ -3037,7 +3407,7 @@ export default function App() {
                 <option value="all">Barchasi</option>
                 <option value="active">Faqat aktiv</option>
                 <option value="inactive">Nofaol</option>
-                <option value="low_stock">Kam qoldiq (≤5, aktiv)</option>
+                <option value="low_stock">Kam qoldiq (o&apos;z chegarasi, aktiv)</option>
                 <option value="no_stock">Qoldiq 0 yoki manfiy</option>
               </select>
             </div>
@@ -3106,7 +3476,11 @@ export default function App() {
             </div>
             <ul className="customer-pick-list">
               {filteredCustomersForList.map((customer) => {
-                const hasDraft = Number(customer.has_open_draft) === 1;
+                const serverHasDraft = Number(customer.has_open_draft) === 1;
+                const isSelectedRow = Number(customer.id) === Number(selectedCustomerId);
+                /** DB dan keyin ro'yxat yangilanmaguncha: tanlangan mijozda qoralama allaqachon bo'sh bo'lsa, sariqni ko'rsatmaslik */
+                const hasDraft =
+                  serverHasDraft && !(isSelectedRow && customerDrafts.length === 0);
                 const balance = Number(customer.outstanding_debt_minor) || 0;
                 const debt = balance > 0 ? balance : 0;
                 const credit = balance < 0 ? -balance : 0;
@@ -3439,6 +3813,13 @@ export default function App() {
                         ) : null}
                       </div>
                       <div className="draft-actions">
+                        <button
+                          type="button"
+                          className="btn secondary"
+                          onClick={() => setDraftReceiptModal({ draft })}
+                        >
+                          Chop etish
+                        </button>
                         <button
                           type="button"
                           className="btn secondary"

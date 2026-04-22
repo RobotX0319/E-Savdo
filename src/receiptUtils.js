@@ -12,6 +12,25 @@ function fmtMoney(value) {
   return new Intl.NumberFormat("uz-UZ").format(Number(value || 0));
 }
 
+/** Musbat: xaridor do'konga qarzdor. Manfiy: do'kon xaridorga qarz (avans). */
+function formatAccountSnapshotUz(minor) {
+  const n = Number(minor);
+  if (!Number.isFinite(n)) return "—";
+  if (n === 0) return "0 so'm";
+  if (n > 0) return `Xaridor qarzi: ${fmtMoney(n)} so'm`;
+  return `Sotuvchi qarzi (avans): ${fmtMoney(-n)} so'm`;
+}
+
+function saleHasBalanceSnapshot(sale) {
+  return (
+    sale != null &&
+    sale.balance_before_minor != null &&
+    sale.balance_after_minor != null &&
+    Number.isFinite(Number(sale.balance_before_minor)) &&
+    Number.isFinite(Number(sale.balance_after_minor))
+  );
+}
+
 function escapeHtml(s) {
   return String(s ?? "")
     .replace(/&/g, "&amp;")
@@ -100,6 +119,17 @@ export function printSaleReceipt(sale, customerName, profile) {
         )} so'm</strong></p>`
       : `<p class="meta">To'liq to'langan.</p>`;
 
+  const balanceSnapBlock = saleHasBalanceSnapshot(sale)
+    ? `<div class="receipt-balance-snap">
+  <p class="meta"><strong>Hisob (bu chekdan oldin):</strong> ${escapeHtml(
+    formatAccountSnapshotUz(sale.balance_before_minor)
+  )}</p>
+  <p class="meta"><strong>Hisob (bu chekdan keyin):</strong> ${escapeHtml(
+    formatAccountSnapshotUz(sale.balance_after_minor)
+  )}</p>
+</div>`
+    : "";
+
   const html = `<!DOCTYPE html><html lang="uz"><head><meta charset="utf-8"><title>Chek №${sale.id}</title>
 <style>
   * { box-sizing: border-box; }
@@ -116,6 +146,8 @@ export function printSaleReceipt(sale, customerName, profile) {
   th { background: #f1f5f9; text-align: left; font-weight: 700; color: #0f172a; }
   td:nth-child(2), td:nth-child(3), td:nth-child(4) { text-align: right; white-space: nowrap; }
   .total { font-size: 1.08rem; font-weight: 700; margin: 16px 0 0; padding-top: 14px; border-top: 2px solid #e2e8f0; }
+  .receipt-balance-snap { margin-top: 14px; padding-top: 12px; border-top: 1px dashed #94a3b8; }
+  .receipt-balance-snap .meta { margin: 6px 0; }
   @media print {
     body { padding: 12px; }
     .seller-box, th { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
@@ -132,6 +164,7 @@ ${noteRow}
 </table>
 <p class="total">Jami: ${fmtMoney(sale.total_minor)} so'm</p>
 ${payBlock}
+${balanceSnapBlock}
 </body></html>`;
 
   /** Electron/Chromium: yangi oyna + document.write ko'pincha bo'sh qoladi; iframe — barqaror */
@@ -181,6 +214,145 @@ ${payBlock}
   } catch {
     cleanup();
     return { ok: false, error: "Chek matni yozilmadi." };
+  }
+
+  const runPrint = () => {
+    try {
+      iwin.focus();
+      iwin.print();
+    } catch {
+      cleanup();
+    }
+  };
+
+  iwin.addEventListener("afterprint", cleanup, { once: true });
+  setTimeout(runPrint, 100);
+  setTimeout(cleanup, 120000);
+  return { ok: true };
+}
+
+/**
+ * @param {{ id: number, createdAt: string, customerName: string, lines: { productName: string, qty: number, unitPrice: number, lineTotal: number }[], totalMinor: number, paidMinor: number, debtPreviewMinor: number }} payload
+ * @param {object} profile
+ * @returns {{ ok: boolean, error?: string }}
+ */
+export function printSaleDraft(payload, profile) {
+  const pProf = normalizeSellerProfile(profile);
+  const shopTitleRaw = pProf.shop_name;
+  const sellerBox = buildSellerBoxHtml(profile);
+  const showSellerHeader = Boolean(shopTitleRaw || sellerBox);
+  const sellerHeaderHtml = showSellerHeader
+    ? `<div class="receipt-shop-block">
+  ${shopTitleRaw ? `<h1 class="shop-title">${escapeHtml(shopTitleRaw)}</h1>` : ""}
+  ${sellerBox}
+</div>`
+    : "";
+  const when = new Date(payload.createdAt).toLocaleString("uz-UZ");
+  const cname = String(payload.customerName || "Anonim").trim() || "Anonim";
+  const rows = (payload.lines || [])
+    .map(
+      (ln) =>
+        `<tr><td>${escapeHtml(ln.productName)}</td><td style="text-align:right">${escapeHtml(
+          formatQtyPlain(ln.qty)
+        )}</td><td style="text-align:right">${fmtMoney(
+          ln.unitPrice
+        )}</td><td style="text-align:right">${fmtMoney(ln.lineTotal)}</td></tr>`
+    )
+    .join("");
+  const owe = Math.max(0, Number(payload.debtPreviewMinor) || 0);
+  const payBlock =
+    owe > 0
+      ? `<p class="meta">To'lov (reja): <strong>${fmtMoney(
+          payload.paidMinor
+        )} so'm</strong> · Qarz: <strong>${fmtMoney(owe)} so'm</strong></p>`
+      : `<p class="meta">To'liq to'lov (reja): <strong>${fmtMoney(
+          Number(payload.paidMinor) || 0
+        )} so'm</strong></p>`;
+  const draftTag = String(payload.draftLabel || "Qoralama (shakllangan)");
+  const noteRow = `<p class="meta draft-print-note"><em>Bu hujjat qoralama; savdo hali yakunlanmagan.</em></p>`;
+  const html = `<!DOCTYPE html><html lang="uz"><head><meta charset="utf-8"><title>Qoralama Q#${payload.id}</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: "Segoe UI", system-ui, sans-serif; padding: 24px; max-width: 520px; margin: 0 auto; color: #0f172a; }
+  .receipt-shop-block { border-bottom: 2px solid #e2e8f0; padding-bottom: 16px; margin-bottom: 18px; }
+  .shop-title { font-size: 1.38rem; margin: 0 0 12px; color: #0f172a; font-weight: 800; letter-spacing: -0.02em; line-height: 1.25; }
+  .seller-box { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 12px 14px; font-size: 0.88rem; color: #334155; }
+  .seller-line { margin: 5px 0; line-height: 1.45; }
+  .seller-note { margin: 10px 0 0; padding-top: 10px; border-top: 1px dashed #cbd5e1; white-space: pre-wrap; line-height: 1.45; color: #475569; font-size: 0.84rem; }
+  .receipt-doc-title { font-size: 1.12rem; margin: 0 0 8px; font-weight: 700; color: #1d4ed8; }
+  .receipt-doc-id { font-size: 0.95rem; margin: 0 0 14px; font-weight: 600; color: #334155; }
+  .meta { font-size: 0.9rem; margin: 8px 0; color: #334155; line-height: 1.4; }
+  .draft-print-note { color: #64748b; }
+  table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 0.85rem; }
+  th, td { border: 1px solid #cbd5e1; padding: 9px 10px; vertical-align: top; }
+  th { background: #f1f5f9; text-align: left; font-weight: 700; color: #0f172a; }
+  td:nth-child(2), td:nth-child(3), td:nth-child(4) { text-align: right; white-space: nowrap; }
+  .total { font-size: 1.08rem; font-weight: 700; margin: 16px 0 0; padding-top: 14px; border-top: 2px solid #e2e8f0; }
+  @media print {
+    body { padding: 12px; }
+    .seller-box, th { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  }
+</style></head><body>
+${sellerHeaderHtml}
+<h2 class="receipt-doc-title">${escapeHtml(draftTag)}</h2>
+<p class="receipt-doc-id">Q#${Number(payload.id)}</p>
+<p class="meta"><strong>Sana:</strong> ${escapeHtml(when)}</p>
+<p class="meta"><strong>Xaridor:</strong> ${escapeHtml(cname)}</p>
+${noteRow}
+<table>
+<thead><tr><th>Mahsulot</th><th>Miqdor</th><th>Narx (so'm)</th><th>Summa (so'm)</th></tr></thead>
+<tbody>${rows}</tbody>
+</table>
+<p class="total">Jami: ${fmtMoney(payload.totalMinor)} so'm</p>
+${payBlock}
+</body></html>`;
+
+  let iframe;
+  try {
+    iframe = document.createElement("iframe");
+    iframe.setAttribute("title", "Qoralama chop etish");
+    iframe.setAttribute("aria-hidden", "true");
+    Object.assign(iframe.style, {
+      position: "fixed",
+      right: "0",
+      bottom: "0",
+      width: "0",
+      height: "0",
+      border: "0",
+      opacity: "0",
+      pointerEvents: "none"
+    });
+    document.body.appendChild(iframe);
+  } catch {
+    return { ok: false, error: "Chop etish tayyorlanmadi." };
+  }
+
+  const iwin = iframe.contentWindow;
+  const idoc = iframe.contentDocument;
+  if (!iwin || !idoc) {
+    try {
+      iframe.remove();
+    } catch {
+      /* ignore */
+    }
+    return { ok: false, error: "Chop etish oynasi tayyorlanmadi." };
+  }
+
+  const cleanup = () => {
+    try {
+      iframe.remove();
+    } catch {
+      /* ignore */
+    }
+  };
+
+  try {
+    idoc.open();
+    idoc.write(html);
+    idoc.close();
+  } catch {
+    cleanup();
+    return { ok: false, error: "Qoralama matni yozilmadi." };
   }
 
   const runPrint = () => {
@@ -354,6 +526,7 @@ export async function copySaleReceiptAsImage(sale, customerName, profile) {
     sale.paid_minor != null && sale.paid_minor !== "" ? Number(sale.paid_minor) : totalM;
   const owe = Math.max(0, totalM - paidM);
   const fmt = fmtMoney;
+  const hasBal = saleHasBalanceSnapshot(sale);
 
   const W = 440;
   const pad = 24;
@@ -387,6 +560,9 @@ export async function copySaleReceiptAsImage(sale, customerName, profile) {
   H += lineH * 1.35;
   if (sale.note?.trim()) H += lineH * 1.35;
   H += 10 + headerRowH + bodyH + 14 + 22 + (owe > 0 ? lineH * 2.1 : lineH * 1.35);
+  if (hasBal) {
+    H += 100;
+  }
   H += pad;
 
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -484,6 +660,204 @@ export async function copySaleReceiptAsImage(sale, customerName, profile) {
   } else {
     ctx.fillStyle = "#15803d";
     ctx.fillText("To'liq to'langan.", pad, y + lineH);
+  }
+
+  if (hasBal) {
+    y += lineH * 1.2;
+    ctx.strokeStyle = "#94a3b8";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    ctx.moveTo(pad, y);
+    ctx.lineTo(W - pad, y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    y += 12;
+    ctx.fillStyle = "#475569";
+    ctx.font = "600 11px Segoe UI, system-ui, sans-serif";
+    ctx.textAlign = "left";
+    ctx.fillText("Hisob (bu chekdan oldin):", pad, y + lineH);
+    y += lineH * 1.2;
+    ctx.font = "12px Segoe UI, system-ui, sans-serif";
+    ctx.fillStyle = "#0f172a";
+    const t1 = wrapProductLines(ctx, formatAccountSnapshotUz(sale.balance_before_minor), W - pad * 2);
+    for (const ln of t1) {
+      ctx.fillText(ln, pad, y + lineH);
+      y += lineH * 1.05;
+    }
+    y += 4;
+    ctx.fillStyle = "#475569";
+    ctx.font = "600 11px Segoe UI, system-ui, sans-serif";
+    ctx.fillText("Hisob (bu chekdan keyin):", pad, y + lineH);
+    y += lineH * 1.2;
+    ctx.font = "12px Segoe UI, system-ui, sans-serif";
+    ctx.fillStyle = "#0f172a";
+    const t2 = wrapProductLines(ctx, formatAccountSnapshotUz(sale.balance_after_minor), W - pad * 2);
+    for (const ln of t2) {
+      ctx.fillText(ln, pad, y + lineH);
+      y += lineH * 1.05;
+    }
+  }
+
+  const blob = await new Promise((res) => canvas.toBlob(res, "image/png", 1));
+  if (!blob) return { ok: false, error: "Rasm yaratilmadi." };
+
+  if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") {
+    return { ok: false, error: "Clipboard API mavjud emas (HTTPS yoki ruxsat kerak)." };
+  }
+
+  try {
+    await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+  } catch (e) {
+    return {
+      ok: false,
+      error: e?.message || "Rasm clipboardga yozilmadi. Brauzer ruxsatini tekshiring."
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * @param {{ id: number, createdAt: string, customerName: string, lines: { productName: string, qty: number, unitPrice: number, lineTotal: number }[], totalMinor: number, paidMinor: number, debtPreviewMinor: number }} payload
+ * @param {object} profile
+ * @returns {Promise<{ ok: boolean, error?: string }>}
+ */
+export async function copySaleDraftAsImage(payload, profile) {
+  const fmt = fmtMoney;
+  const name = String(payload.customerName || "Anonim").trim() || "Anonim";
+  const items = payload.lines || [];
+  const totalM = Number(payload.totalMinor) || 0;
+  const paidM = Number(payload.paidMinor) || 0;
+  const owe = Math.max(0, Number(payload.debtPreviewMinor) || 0);
+
+  const W = 440;
+  const pad = 24;
+  const lineH = 17;
+  const headerRowH = 28;
+  const colWName = 178;
+  const colX = {
+    name: pad,
+    qty: pad + 186,
+    price: pad + 238,
+    sum: pad + 318
+  };
+
+  const scratch = document.createElement("canvas");
+  const mctx = scratch.getContext("2d");
+  if (!mctx) return { ok: false, error: "Canvas qo'llab-quvvatlanmaydi." };
+  mctx.font = "12px Segoe UI, system-ui, sans-serif";
+
+  const sellerHeadH = computeSellerHeaderHeight(mctx, profile, W, pad, lineH);
+
+  let bodyH = 0;
+  for (const it of items) {
+    const lines = wrapProductLines(mctx, it.productName, colWName);
+    bodyH += Math.max(30, lines.length * lineH + 12);
+  }
+
+  let H = pad;
+  H += sellerHeadH;
+  H += 26 + 22 + lineH * 1.35 * 2 + lineH * 1.1 + 8;
+  H += 10 + headerRowH + bodyH + 14 + 22 + (owe > 0 ? lineH * 2.1 : lineH * 1.45);
+  H += pad;
+
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return { ok: false, error: "Canvas qo'llab-quvvatlanmaydi." };
+
+  canvas.width = Math.floor(W * dpr);
+  canvas.height = Math.ceil(H * dpr);
+  ctx.scale(dpr, dpr);
+
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = "#94a3b8";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(1, 1, W - 2, H - 2);
+
+  let y = pad;
+  y = drawSellerHeader(ctx, profile, W, pad, y, lineH);
+
+  ctx.fillStyle = "#1d4ed8";
+  ctx.font = "bold 16px Segoe UI, system-ui, sans-serif";
+  ctx.textAlign = "left";
+  ctx.fillText("Qoralama (shakllangan)", pad, y + 18);
+  y += 26;
+  ctx.fillStyle = "#334155";
+  ctx.font = "600 14px Segoe UI, system-ui, sans-serif";
+  ctx.fillText(`Q#${Number(payload.id)}`, pad, y + 14);
+  y += 22;
+  ctx.font = "13px Segoe UI, system-ui, sans-serif";
+  ctx.fillStyle = "#475569";
+  ctx.fillText(`Sana: ${new Date(payload.createdAt).toLocaleString("uz-UZ")}`, pad, y + lineH);
+  y += lineH * 1.35;
+  ctx.fillText(`Xaridor: ${name}`, pad, y + lineH);
+  y += lineH * 1.35;
+  ctx.fillStyle = "#64748b";
+  ctx.font = "italic 11px Segoe UI, system-ui, sans-serif";
+  ctx.fillText("Qoralama; savdo hali yakunlanmagan.", pad, y + 12);
+  y += lineH * 1.0;
+
+  const tableTop = y;
+  ctx.fillStyle = "#f1f5f9";
+  ctx.fillRect(pad, tableTop, W - pad * 2, headerRowH);
+  ctx.fillStyle = "#0f172a";
+  ctx.font = "bold 12px Segoe UI, system-ui, sans-serif";
+  ctx.textAlign = "left";
+  ctx.fillText("Mahsulot", colX.name + 4, tableTop + 19);
+  ctx.textAlign = "right";
+  ctx.fillText("Miqdor", colX.qty + 44, tableTop + 19);
+  ctx.fillText("Narx", colX.price + 62, tableTop + 19);
+  ctx.fillText("Summa", colX.sum + 78, tableTop + 19);
+  ctx.textAlign = "left";
+
+  y = tableTop + headerRowH;
+  ctx.font = "12px Segoe UI, system-ui, sans-serif";
+  ctx.strokeStyle = "#e2e8f0";
+  ctx.lineWidth = 1;
+
+  for (const it of items) {
+    const lines = wrapProductLines(ctx, it.productName, colWName);
+    const rh = Math.max(30, lines.length * lineH + 12);
+    ctx.beginPath();
+    ctx.moveTo(pad, y);
+    ctx.lineTo(W - pad, y);
+    ctx.stroke();
+    let ly = y + 16;
+    ctx.fillStyle = "#0f172a";
+    ctx.textAlign = "left";
+    for (const ln of lines) {
+      ctx.fillText(ln, colX.name + 4, ly);
+      ly += lineH;
+    }
+    ctx.textAlign = "right";
+    ctx.fillText(formatQtyPlain(it.qty), colX.qty + 44, y + 16);
+    ctx.fillText(fmt(it.unitPrice), colX.price + 62, y + 16);
+    ctx.fillText(fmt(it.lineTotal), colX.sum + 78, y + 16);
+    ctx.textAlign = "left";
+    y += rh;
+  }
+
+  ctx.beginPath();
+  ctx.moveTo(pad, y);
+  ctx.lineTo(W - pad, y);
+  ctx.strokeStyle = "#cbd5e1";
+  ctx.stroke();
+
+  y += 14;
+  ctx.fillStyle = "#0f172a";
+  ctx.font = "bold 15px Segoe UI, system-ui, sans-serif";
+  ctx.textAlign = "left";
+  ctx.fillText(`Jami: ${fmt(totalM)} so'm`, pad, y + lineH);
+  y += 22;
+  ctx.font = "12px Segoe UI, system-ui, sans-serif";
+  if (owe > 0) {
+    ctx.fillStyle = "#b45309";
+    ctx.fillText(`To'lov (reja): ${fmt(paidM)} so'm  ·  Qarz: ${fmt(owe)} so'm`, pad, y + lineH);
+  } else {
+    ctx.fillStyle = "#15803d";
+    ctx.fillText(`To'liq to'lov (reja): ${fmt(paidM)} so'm`, pad, y + lineH);
   }
 
   const blob = await new Promise((res) => canvas.toBlob(res, "image/png", 1));

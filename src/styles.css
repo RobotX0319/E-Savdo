@@ -129,11 +129,43 @@ body {
   background: #ffffff;
   border-radius: 14px;
   padding: 14px 18px;
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 12px 16px;
   align-items: center;
   box-shadow: 0 3px 12px rgba(15, 23, 42, 0.07);
   margin-bottom: 12px;
+}
+
+.topbar-warehouse {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px 10px;
+  min-width: 0;
+}
+
+.warehouse-select-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #64748b;
+  margin: 0;
+}
+
+.warehouse-select {
+  min-width: 140px;
+  max-width: min(100%, 300px);
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.warehouse-new-btn {
+  white-space: nowrap;
 }
 
 .topbar-actions {
@@ -1744,9 +1776,12 @@ td {
 
 @media (max-width: 980px) {
   .topbar {
-    align-items: flex-start;
-    gap: 10px;
-    flex-direction: column;
+    align-items: stretch;
+    grid-template-columns: 1fr;
+  }
+
+  .topbar-warehouse {
+    justify-content: flex-start;
   }
 
   .topbar-actions {
