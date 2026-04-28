@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { Info, Pencil, Trash2 } from "lucide-react";
+import { Info, LifeBuoy, Pencil, Trash2 } from "lucide-react";
 import {
   copySaleDraftAsImage,
   copySaleReceiptAsImage,
@@ -20,6 +20,9 @@ import {
 
 const APP_ABOUT_LEAD =
   "Mahalliy ish stoli dasturi: mahsulotlar va ombor, xaridorlar, savdo, hisobotlar va cheklar.";
+
+/** Obuna: internet bo‘lganda davriy tekshirish oralig‘i (ms). */
+const LICENSE_POLL_INTERVAL_MS = 5 * 60 * 1000;
 
 const tabs = [
   { id: "dashboard", label: "Dashboard" },
@@ -905,6 +908,9 @@ export default function App() {
     }, 2500);
   }
 
+  const pushNoticeRef = useRef(pushNotice);
+  pushNoticeRef.current = pushNotice;
+
   function resetUiAfterDbContextChange() {
     setSelectedCustomerId(null);
     setCustomerSales([]);
@@ -1096,6 +1102,54 @@ export default function App() {
     void loadInitial();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- faqat litsenziya ochilganda bir marta yuklash
   }, [licensePhase]);
+
+  useEffect(() => {
+    if (licensePhase !== "ok" || typeof api?.licenseGetStatus !== "function") {
+      return undefined;
+    }
+
+    let cancelled = false;
+    let intervalId = 0;
+
+    async function verifySubscription() {
+      if (cancelled || !navigator.onLine) {
+        return;
+      }
+      try {
+        const s = await api.licenseGetStatus();
+        if (cancelled) {
+          return;
+        }
+        setLicenseInfo(s);
+        if (s.valid === true || s.skipped === true) {
+          return;
+        }
+        setLicensePhase("blocked");
+        pushNoticeRef.current(
+          s.error === "clock_tamper"
+            ? "Obuna: vaqt tekshiruvi. Dasturni qayta oching."
+            : "Obuna holati o'zgardi yoki muddat tugadi."
+        );
+      } catch {
+        /* tarmoq yoki vaqtincha xatolik — keyingi intervallarda uriniladi */
+      }
+    }
+
+    function onOnline() {
+      void verifySubscription();
+    }
+
+    intervalId = window.setInterval(() => {
+      void verifySubscription();
+    }, LICENSE_POLL_INTERVAL_MS);
+    window.addEventListener("online", onOnline);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+      window.removeEventListener("online", onOnline);
+    };
+  }, [licensePhase, api]);
 
   useEffect(() => {
     if (editingProductId != null) {
@@ -2518,6 +2572,17 @@ export default function App() {
               </div>
             ) : null}
           </div>
+          {typeof window !== "undefined" && typeof window.api?.supportOpenWindow === "function" ? (
+            <button
+              type="button"
+              className="btn secondary about-top-btn"
+              aria-label="Qo'llab-quvvatlash chat"
+              title="Support — yozishma"
+              onClick={() => void window.api.supportOpenWindow()}
+            >
+              <LifeBuoy size={20} strokeWidth={2} aria-hidden />
+            </button>
+          ) : null}
           <button
             type="button"
             className="btn secondary about-top-btn"

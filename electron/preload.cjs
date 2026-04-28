@@ -79,5 +79,11 @@ contextBridge.exposeInMainWorld("api", {
   createWarehouse: (payload) => ipcRenderer.invoke("warehouses:create", payload),
 
   licenseGetStatus: () => ipcRenderer.invoke("license:get-status"),
-  licenseSubmitRequest: (payload) => ipcRenderer.invoke("license:submit-request", payload)
+  licenseSubmitRequest: (payload) => ipcRenderer.invoke("license:submit-request", payload),
+
+  /** Aloqa markazi: yangi Electron oyna + worker API */
+  supportOpenWindow: () => ipcRenderer.invoke("support:open-window"),
+  supportFetchHistory: () => ipcRenderer.invoke("support:fetch-history"),
+  supportSendMessage: (text) => ipcRenderer.invoke("support:send-message", text),
+  supportAckStaffUnread: () => ipcRenderer.invoke("support:ack-staff-unread")
 });

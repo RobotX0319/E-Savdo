@@ -130,6 +130,64 @@ export function getMiniAppHtml() {
     .btn-danger { padding: 14px; border-radius: 10px; border: none; font-weight: 600; background: #dc2626; color: #fff; cursor: pointer; }
     .btn-secondary { padding: 14px; border-radius: 10px; border: none; font-weight: 600;
       background: var(--tg-theme-secondary-bg-color, #334155); color: inherit; cursor: pointer; }
+    .usr-card-wrap {
+      display: flex; gap: 8px; align-items: stretch;
+    }
+    .usr-card-wrap .card-main-part {
+      flex: 1; text-align: left; cursor: pointer; width: auto; border: none; font: inherit; color: inherit;
+      padding: 12px 14px; border-radius: 12px;
+      background: var(--tg-theme-secondary-bg-color, #1e293b);
+      border: 1px solid rgba(148,163,184,0.2);
+    }
+    .usr-card-side {
+      display: flex; flex-direction: column; gap: 6px; align-items: center; justify-content: center;
+      flex-shrink: 0;
+    }
+    .support-badge {
+      min-width: 22px; height: 22px; padding: 0 7px; border-radius: 999px;
+      background: #dc2626; color: #fff; font-size: 0.7rem; font-weight: 800;
+      display: inline-flex; align-items: center; justify-content: center;
+    }
+    .support-badge.soft-hide { visibility: hidden; }
+    .btn-chat-mini {
+      padding: 10px 12px; border-radius: 10px; border: none;
+      font-weight: 700; font-size: 0.82rem; cursor: pointer; background: #2563eb; color: #fff;
+    }
+    .support-chat-wrap {
+      display: flex; flex-direction: column;
+      height: min(68vh, 520px); max-height: 78vh;
+    }
+    .support-msg-scroll {
+      flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden;
+      padding: 8px 2px 12px;
+      display: flex; flex-direction: column; gap: 10px;
+    }
+    .support-msg-row { display: flex; }
+    .support-msg-row.row-user { justify-content: flex-end; }
+    .support-msg-row.row-staff { justify-content: flex-start; }
+    .support-bubble {
+      max-width: 88%; padding: 10px 12px; border-radius: 14px;
+      font-size: 0.9rem; line-height: 1.38; word-break: break-word; white-space: pre-wrap;
+    }
+    .support-bubble.b-user {
+      background: #2563eb; color: #fff; border-radius: 14px 14px 4px 14px;
+    }
+    .support-bubble.b-staff {
+      background: var(--tg-theme-secondary-bg-color, #334155); color: inherit;
+      border-radius: 14px 14px 14px 4px;
+    }
+    .support-meta { font-size: 0.65rem; opacity: 0.7; margin-top: 4px; }
+    .support-composer-row { display: flex; gap: 8px; margin-top: 10px; flex-shrink: 0; align-items: flex-end; }
+    .support-composer-row textarea {
+      flex: 1; min-height: 48px; max-height: 140px;
+      resize: vertical; padding: 10px 12px; border-radius: 10px; font-size: 16px;
+      border: 1px solid var(--tg-theme-hint-color, #475569);
+      background: var(--tg-theme-bg-color, #0f172a); color: inherit; font-family: inherit;
+    }
+    .support-send-btn {
+      flex-shrink: 0; padding: 12px 14px; border-radius: 10px; border: none;
+      font-weight: 700; font-size: 0.88rem; cursor: pointer; background: #16a34a; color: #fff;
+    }
   </style>
 </head>
 <body>
@@ -176,7 +234,7 @@ export function getMiniAppHtml() {
 
     <div id="panel-users" class="panel">
       <h2>Foydalanuvchilar</h2>
-      <p class="hint">Ro'yxatda ism va obuna. Batafsil (Device ID va boshqalar) uchun ustiga bosing.</p>
+      <p class="hint">Ism va obuna. Batafsil (Device ID) uchun chap qismga bosing — o‘ngda yangi xabar soni va Chat.</p>
       <input type="search" id="q-users" class="search" placeholder="Ism, kontakt, obuna bo'yicha qidirish..." autocomplete="off" />
       <div id="users-list" class="list"></div>
       <div id="users-empty" class="empty" style="display:none">Litsenziyalar yo'q</div>
@@ -231,6 +289,7 @@ export function getMiniAppHtml() {
   var items = [];
   var admins = [];
   var stats = { total: 0, active: 0, expired: 0 };
+  var supportPoll = null;
 
   function escapeHtml(s) {
     return String(s || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
@@ -333,6 +392,16 @@ export function getMiniAppHtml() {
     });
   }
 
+  function updateUserSupportUnread(mid, unread) {
+    items = items.map(function (i) {
+      if (i.machineId !== mid) return i;
+      var next = Object.assign({}, i);
+      next.supportUnread = unread;
+      return next;
+    });
+    renderUsers(document.getElementById("q-users").value);
+  }
+
   function renderUsers(filter) {
     var q = (filter || "").trim().toLowerCase();
     var list = document.getElementById("users-list");
@@ -354,23 +423,150 @@ export function getMiniAppHtml() {
     empty.style.display = "none";
     rows.forEach(function (x) {
       var act = licenseActiveNow(x);
-      var b = document.createElement("button");
-      b.type = "button";
-      b.className = "card";
+      var wrap = document.createElement("div");
+      wrap.className = "usr-card-wrap";
+      var su = Number(x.supportUnread || 0) || 0;
+      var mainBtn = document.createElement("button");
+      mainBtn.type = "button";
+      mainBtn.className = "card-main-part";
       var pill = "<span class='pill " + (act ? "ok" : "bad") + "'>" + (act ? "Aktiv" : "Tugagan") + "</span>";
-      b.innerHTML =
+      mainBtn.innerHTML =
         "<div class='uname'>" + escapeHtml(userListTitle(x)) + "</div>" +
         "<div class='submeta'><span class='plan'>" + escapeHtml(x.planLabel || x.plan || "—") + "</span> · " +
         formatDate(x.expiresAt) + "</div>" + pill;
-      b.onclick = function () { openUserModal(x); };
-      list.appendChild(b);
+      mainBtn.onclick = function () { openUserModal(x); };
+      var side = document.createElement("div");
+      side.className = "usr-card-side";
+      var bd = document.createElement("span");
+      bd.className = "support-badge" + (su > 0 ? "" : " soft-hide");
+      bd.textContent = su > 0 ? String(su) : "0";
+      var chatBtn = document.createElement("button");
+      chatBtn.type = "button";
+      chatBtn.className = "btn-chat-mini";
+      chatBtn.textContent = "Chat";
+      chatBtn.onclick = function (ev) {
+        ev.stopPropagation();
+        openSupportChat(x, bd);
+      };
+      side.appendChild(bd);
+      side.appendChild(chatBtn);
+      wrap.appendChild(mainBtn);
+      wrap.appendChild(side);
+      list.appendChild(wrap);
     });
   }
 
+  function closeSupportChatModal() {
+    closeModal();
+  }
+
+  function formatMsgTime(ts) {
+    try {
+      var d = new Date(ts);
+      if (isNaN(d.getTime())) return "";
+      return d.toLocaleString("uz-UZ", { dateStyle: "short", timeStyle: "short" });
+    } catch (e) {
+      return "";
+    }
+  }
+
+  function openSupportChat(x, badgeEl) {
+    if (!x || !x.machineId) return;
+    closeSupportChatModal();
+    var machineId = x.machineId;
+    showErr("");
+    var m = document.getElementById("modal");
+
+    function renderIntoScroll(box, msgs) {
+      box.innerHTML = "";
+      (msgs || []).forEach(function (msg) {
+        var row = document.createElement("div");
+        row.className = "support-msg-row row-" + (msg.role === "staff" ? "staff" : "user");
+        var b = document.createElement("div");
+        b.className = "support-bubble b-" + (msg.role === "staff" ? "staff" : "user");
+        b.innerHTML =
+          escapeHtml(msg.body || "") +
+          '<div class="support-meta">' + escapeHtml(formatMsgTime(msg.ts)) + "</div>";
+        row.appendChild(b);
+        box.appendChild(row);
+      });
+      box.scrollTop = box.scrollHeight;
+    }
+
+    function loadMsgs(silent) {
+      fetch(
+        API + "/admin/support/messages?machineId=" + encodeURIComponent(machineId),
+        { headers: authBearer() }
+      )
+        .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+        .then(function (xr) {
+          if (!xr.ok || !xr.j.ok) {
+            if (!silent) showErr(xr.j.error || "Xabarlar yuklanmadi");
+            return;
+          }
+          var box = document.getElementById("support-msg-inner");
+          if (box) renderIntoScroll(box, xr.j.messages || []);
+          if (!silent && badgeEl) updateUserSupportUnread(machineId, 0);
+        })
+        .catch(function (e) { if (!silent) showErr(e.message); });
+    }
+
+    m.style.display = "block";
+    m.innerHTML =
+      "<div class='backdrop' id='bd'>" +
+      "<div class='sheet support-chat-sheet' onclick='event.stopPropagation()'>" +
+      "<div style='display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:8px'>" +
+      "<h3 style='margin:0'>" + escapeHtml(userListTitle(x)) + "</h3>" +
+      "</div>" +
+      "<p style='font-size:0.78rem;opacity:0.8;margin:0 0 10px 0;word-break:break-all'>ID: " +
+      escapeHtml(machineId) + "</p>" +
+      "<div class='support-chat-wrap'>" +
+      "<div class='support-msg-scroll' id='support-msg-inner'></div>" +
+      "<div class='support-composer-row'>" +
+      "<textarea id='support-input' rows='2' placeholder='Javob yozing…'></textarea>" +
+      "<button type='button' class='support-send-btn' id='support-send'>Yuborish</button>" +
+      "</div></div>" +
+      "<div class='btn-row' style='margin-top:14px'><button type='button' class='btn-secondary' id='support-close'>Yopish</button></div>" +
+      "</div></div>";
+
+    document.getElementById("bd").onclick = closeSupportChatModal;
+    document.getElementById("support-close").onclick = closeSupportChatModal;
+    document.getElementById("support-send").onclick = function () {
+      var ta = document.getElementById("support-input");
+      var txt = ta && ta.value ? ta.value.trim() : "";
+      if (!txt) return;
+      fetch(API + "/admin/support/reply", {
+        method: "POST",
+        headers: authBearer(),
+        body: JSON.stringify({ machineId: machineId, text: txt }),
+      })
+        .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+        .then(function (xr) {
+          if (!xr.ok || !xr.j.ok) {
+            showErr(xr.j.error || "Yuborilmadi");
+            return;
+          }
+          if (ta) ta.value = "";
+          loadMsgs(true);
+          if (tg && tg.showAlert) tg.showAlert("Yuborildi.");
+        })
+        .catch(function (e) { showErr(e.message); });
+    };
+
+    loadMsgs(false);
+    if (supportPoll) clearInterval(supportPoll);
+    supportPoll = setInterval(function () { loadMsgs(true); }, 4000);
+  }
+
   function closeModal() {
+    if (supportPoll) {
+      clearInterval(supportPoll);
+      supportPoll = null;
+    }
     document.getElementById("modal").style.display = "none";
     document.getElementById("modal").innerHTML = "";
   }
+
   function openUserModal(x) {
     var m = document.getElementById("modal");
     m.style.display = "block";

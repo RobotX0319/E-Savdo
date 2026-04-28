@@ -2153,3 +2153,149 @@ td {
     animation: none !important;
   }
 }
+
+/* Support oynasi (Electron, ?mode=support) */
+.support-app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: #f8fafc;
+  color: #0f172a;
+}
+
+.support-app-header {
+  padding: 14px 16px;
+  border-bottom: 1px solid #e2e8f0;
+  background: #ffffff;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05);
+}
+
+.support-app-title {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 800;
+}
+
+.support-app-sub {
+  margin: 4px 0 0;
+  font-size: 0.85rem;
+  color: #64748b;
+}
+
+.support-app-banner {
+  margin: 10px 12px 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-weight: 600;
+  font-size: 0.88rem;
+}
+
+.support-app-banner--error {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #991b1b;
+}
+
+.support-app-banner--info {
+  background: #ecfdf5;
+  border: 1px solid #6ee7b7;
+  color: #047857;
+}
+
+.support-app-messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.support-app-empty {
+  margin: 24px auto;
+  padding: 0 12px;
+  text-align: center;
+  color: #64748b;
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+.support-app-row {
+  display: flex;
+}
+
+.support-app-row.is-user {
+  justify-content: flex-end;
+}
+
+.support-app-row.is-staff {
+  justify-content: flex-start;
+}
+
+.support-app-bubble {
+  max-width: min(86%, 360px);
+  padding: 10px 12px;
+  border-radius: 14px;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+}
+
+.support-app-bubble.is-user {
+  background: #0f172a;
+  color: #f8fafc;
+  border-radius: 14px 14px 4px 14px;
+}
+
+.support-app-bubble.is-staff {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px 14px 14px 4px;
+}
+
+.support-app-bubble-text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.42;
+}
+
+.support-app-bubble-time {
+  display: block;
+  margin-top: 6px;
+  font-size: 0.7rem;
+  opacity: 0.82;
+}
+
+.support-app-composer {
+  flex-shrink: 0;
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  padding: 14px;
+  border-top: 1px solid #e2e8f0;
+  background: #ffffff;
+}
+
+.support-app-input {
+  flex: 1;
+  min-height: 48px;
+  max-height: 160px;
+  resize: vertical;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid #cbd5e1;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.support-app-send {
+  flex-shrink: 0;
+}
+
+.support-app .support-app-send {
+  padding-left: 16px;
+  padding-right: 16px;
+  min-height: 44px;
+}
+

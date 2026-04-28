@@ -47,8 +47,50 @@ const LICENSE_WORKER_URL = resolveLicenseWorkerUrl();
 const SKIP_LICENSE = process.env.ESAVDO_SKIP_LICENSE === "1";
 
 let mainWindow = null;
+let supportWindow = null;
 let dbService = null;
 let appDbPath = null;
+
+function createSupportWindow() {
+  if (supportWindow && !supportWindow.isDestroyed()) {
+    supportWindow.focus();
+    return;
+  }
+  supportWindow = new BrowserWindow({
+    width: 440,
+    height: 620,
+    minWidth: 340,
+    minHeight: 420,
+    title: "E-Savdo — Support",
+    backgroundColor: "#0f172a",
+    webPreferences: {
+      preload: path.join(__dirname, "preload.cjs"),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  });
+  supportWindow.removeMenu?.();
+  if (app.isPackaged) {
+    supportWindow.loadFile(path.join(__dirname, "..", "dist", "index.html"), { query: { mode: "support" } });
+  } else {
+    supportWindow.loadURL("http://localhost:5173/?mode=support");
+  }
+  supportWindow.on("closed", () => {
+    supportWindow = null;
+  });
+}
+
+async function supportFetchJson(postPath, bodyObj) {
+  const base = String(LICENSE_WORKER_URL || "").trim().replace(/\/$/, "");
+  if (!base) throw new Error("worker_not_configured");
+  const r = await fetch(`${base}${postPath}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(bodyObj || {})
+  });
+  const j = await r.json().catch(() => ({}));
+  return { okHttp: r.ok, status: r.status, j };
+}
 
 function isSqliteDatabaseFile(filePath) {
   let fd;
@@ -488,6 +530,95 @@ function registerIpc() {
         message: e.message || String(e),
         payload: e.payload
       };
+    }
+  });
+
+  ipcMain.handle("support:open-window", () => {
+    createSupportWindow();
+    return { ok: true };
+  });
+
+  ipcMain.handle("support:fetch-history", async () => {
+    if (SKIP_LICENSE) {
+      return {
+        ok: true,
+        skipped: true,
+        messages: [],
+        unreadByUser: 0
+      };
+    }
+    const userDataDir = app.getPath("userData");
+    const machineId = getOrCreateMachineId(userDataDir);
+    try {
+      const { okHttp, j } = await supportFetchJson("/api/support/history", { machineId });
+      if (!okHttp || !j.ok) {
+        return {
+          ok: false,
+          error: j.error || "history_failed",
+          messages: [],
+          unreadByUser: 0
+        };
+      }
+      return {
+        ok: true,
+        messages: Array.isArray(j.messages) ? j.messages : [],
+        unreadByUser: Number(j.unreadByUser || 0) || 0
+      };
+    } catch (e) {
+      return {
+        ok: false,
+        error: e?.message === "worker_not_configured" ? "worker_not_configured" : "network",
+        messages: [],
+        unreadByUser: 0
+      };
+    }
+  });
+
+  ipcMain.handle("support:send-message", async (_, text) => {
+    const body = String(text || "").trim();
+    if (!body) {
+      return { ok: false, error: "empty" };
+    }
+    if (SKIP_LICENSE) {
+      return { ok: false, error: "skipped", message: "Demo rejimida qo'llab-quvvatlash yozishmasi mavjud emas." };
+    }
+    const userDataDir = app.getPath("userData");
+    const machineId = getOrCreateMachineId(userDataDir);
+    try {
+      const { okHttp, j } = await supportFetchJson("/api/support/send", {
+        machineId,
+        text: body.slice(0, 4000)
+      });
+      if (!okHttp || !j.ok) {
+        if (j.error === "rate_limit") {
+          return { ok: false, error: "rate_limit", message: "Cheklov: birozdan keyin urinib ko'ring." };
+        }
+        return {
+          ok: false,
+          error: j.error || "send_failed",
+          message: j.message
+        };
+      }
+      return { ok: true, message: j.message };
+    } catch (e) {
+      return {
+        ok: false,
+        error: e?.message === "worker_not_configured" ? "worker_not_configured" : "network"
+      };
+    }
+  });
+
+  ipcMain.handle("support:ack-staff-unread", async () => {
+    if (SKIP_LICENSE) {
+      return { ok: true, skipped: true };
+    }
+    const userDataDir = app.getPath("userData");
+    const machineId = getOrCreateMachineId(userDataDir);
+    try {
+      await supportFetchJson("/api/support/ack-user", { machineId });
+      return { ok: true };
+    } catch {
+      return { ok: false };
     }
   });
 }

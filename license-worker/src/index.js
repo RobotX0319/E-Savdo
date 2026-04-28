@@ -1,5 +1,5 @@
 /**
- * E-Savdo litsenziya worker: KV + Telegram admin tasdiqlash + Mini App (admin)
+ * E-Savdo litsenziya worker: KV + Telegram admin tasdiqlash + Mini App (admin) + Support → admin Telegram bildirishnomalari
  *
  * Secrets: TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_CHAT_ID, MINIAPP_LOGIN, MINIAPP_PASSWORD,
  *          WEBHOOK_SECRET (ixtiyoriy)
@@ -286,6 +286,246 @@ async function editAllAdminRequestMessages(token, env, requestId, newText, parse
   }
 }
 
+const SUPPORT_MSG_PREFIX = "support:messages:";
+const SUPPORT_META_PREFIX = "support:meta:";
+/** Adminlarga yuborilgan Telegram xabar IDlari — o‘qilganda o‘chirish uchun */
+const SUPPORT_TG_REFS_PREFIX = "support:tg_notify_refs:";
+
+/** Faol obuna (server bo'yicha) — support API uchun */
+async function readActiveLicenseRecord(kv, machineId) {
+  const mid = String(machineId || "").trim();
+  if (!mid) return null;
+  const raw = await kv.get(`license:${mid}`);
+  if (!raw) return null;
+  let lic;
+  try {
+    lic = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  const exp = new Date(lic.expiresAt).getTime();
+  const valid =
+    Number.isFinite(exp) && exp > Date.now() && lic.status === "active";
+  return valid ? lic : null;
+}
+
+async function supportRateAllow(env, machineId) {
+  const hourBucket = Math.floor(Date.now() / 3600000);
+  const k = `support:rl:${machineId}:${hourBucket}`;
+  const raw = await env.LICENSE_KV.get(k);
+  const n = raw ? Number(raw) : 0;
+  const max = 48;
+  if (!Number.isFinite(n) || n >= max) {
+    return false;
+  }
+  await env.LICENSE_KV.put(k, String(n + 1), { expirationTtl: 7200 });
+  return true;
+}
+
+async function getSupportMessages(kv, machineId) {
+  const raw = await kv.get(`${SUPPORT_MSG_PREFIX}${machineId}`);
+  if (!raw) return [];
+  try {
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+}
+
+async function putSupportMessages(kv, machineId, messages) {
+  await kv.put(`${SUPPORT_MSG_PREFIX}${machineId}`, JSON.stringify(messages.slice(-400)));
+}
+
+async function patchSupportMeta(env, machineId, fn) {
+  const key = `${SUPPORT_META_PREFIX}${machineId}`;
+  const rawM = await env.LICENSE_KV.get(key);
+  let meta = { unreadByAdmin: 0, unreadByUser: 0 };
+  if (rawM) {
+    try {
+      meta = { ...meta, ...JSON.parse(rawM) };
+    } catch {
+      /* */
+    }
+  }
+  const next = fn(meta) || meta;
+  await env.LICENSE_KV.put(key, JSON.stringify(next));
+  return next;
+}
+
+async function appendSupportMessage(env, machineId, role, bodyText) {
+  const text = String(bodyText || "").trim().slice(0, 4000);
+  if (!text) {
+    return { error: "empty" };
+  }
+  const messages = await getSupportMessages(env.LICENSE_KV, machineId);
+  const msg = {
+    id: crypto.randomUUID(),
+    ts: Date.now(),
+    role: role === "staff" ? "staff" : "user",
+    body: text,
+  };
+  messages.push(msg);
+  await putSupportMessages(env.LICENSE_KV, machineId, messages);
+  await patchSupportMeta(env, machineId, (m) => {
+    const unreadByAdmin = m.unreadByAdmin || 0;
+    const unreadByUser = m.unreadByUser || 0;
+    if (msg.role === "user") {
+      return { ...m, unreadByAdmin: unreadByAdmin + 1 };
+    }
+    return { ...m, unreadByUser: unreadByUser + 1 };
+  });
+  return { msg };
+}
+
+async function getLicenseHintForNotify(kv, machineId) {
+  const raw = await kv.get(`license:${machineId}`);
+  if (!raw) return { fullName: "", contact: "" };
+  try {
+    const lic = JSON.parse(raw);
+    return {
+      fullName: String(lic.fullName || "").trim(),
+      contact: String(lic.contact || "").trim(),
+    };
+  } catch {
+    return { fullName: "", contact: "" };
+  }
+}
+
+async function mergeNotifyRefs(kv, machineId, newRefs) {
+  if (!newRefs || !newRefs.length) return;
+  const key = `${SUPPORT_TG_REFS_PREFIX}${machineId}`;
+  let existing = [];
+  const raw = await kv.get(key);
+  if (raw) {
+    try {
+      const p = JSON.parse(raw);
+      if (Array.isArray(p)) existing = p;
+    } catch {
+      /* */
+    }
+  }
+  existing.push(...newRefs);
+  await kv.put(key, JSON.stringify(existing.slice(-120)));
+}
+
+/** Adminlar chatda support o‘qiganda yoki bekor qilganda — Telegramdagi bildirishnomalarni o‘chirish */
+async function deleteSupportTelegramNotifications(env, machineId) {
+  const token = env.TELEGRAM_BOT_TOKEN;
+  const key = `${SUPPORT_TG_REFS_PREFIX}${machineId}`;
+  const raw = await env.LICENSE_KV.get(key);
+  if (!raw) return;
+  let refs = [];
+  try {
+    refs = JSON.parse(raw);
+    if (!Array.isArray(refs)) refs = [];
+  } catch {
+    await env.LICENSE_KV.delete(key);
+    return;
+  }
+  if (token) {
+    for (const ref of refs) {
+      const chatId = ref.chat_id ?? ref.chatId;
+      const mid = ref.message_id ?? ref.messageId;
+      if (chatId == null || mid == null) continue;
+      try {
+        await fetch(`https://api.telegram.org/bot${token}/deleteMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_id: chatId, message_id: mid }),
+        });
+      } catch {
+        /* */
+      }
+    }
+  }
+  await env.LICENSE_KV.delete(key);
+}
+
+async function supportNotifyAdminsUserMessage(env, machineId, userMsg) {
+  const token = env.TELEGRAM_BOT_TOKEN;
+  if (!token) return;
+  const adminIds = await getAdminIds(env);
+  if (!adminIds.length) return;
+  const hint = await getLicenseHintForNotify(env.LICENSE_KV, machineId);
+  const preview = String(userMsg?.body || "").trim().slice(0, 350);
+  const lines = [
+    "💬 Yangi support xabari",
+    "",
+    `Ism: ${hint.fullName || "—"}`,
+    `Device: ${machineId}`,
+  ];
+  if (hint.contact) {
+    lines.push(`Kontakt: ${hint.contact}`);
+  }
+  lines.push("", preview || "(bo'sh)");
+  const text = lines.join("\n");
+  const newRefs = [];
+  for (const adminId of adminIds) {
+    try {
+      const sent = await tgApi(token, "sendMessage", {
+        chat_id: adminId,
+        text,
+        disable_web_page_preview: true,
+      });
+      if (sent && sent.message_id != null && sent.chat && sent.chat.id != null) {
+        newRefs.push({ chat_id: sent.chat.id, message_id: sent.message_id });
+      }
+    } catch {
+      /* telegram xatoliklari */
+    }
+  }
+  if (newRefs.length) {
+    await mergeNotifyRefs(env.LICENSE_KV, machineId, newRefs);
+  }
+}
+
+async function clearAdminUnread(env, machineId) {
+  await patchSupportMeta(env, machineId, (m) => ({ ...m, unreadByAdmin: 0 }));
+  await deleteSupportTelegramNotifications(env, machineId);
+}
+
+async function clearUserUnread(env, machineId) {
+  await patchSupportMeta(env, machineId, (m) => ({ ...m, unreadByUser: 0 }));
+}
+
+/** Adminlar uchun badge: masofadan yozuv bo'yicha */
+async function mapSupportUnreadByMachine(kv) {
+  const out = {};
+  let cursor;
+  for (;;) {
+    const res = await kv.list({ prefix: SUPPORT_META_PREFIX, cursor });
+    for (const item of res.keys) {
+      const mid = item.name.slice(SUPPORT_META_PREFIX.length);
+      const raw = await kv.get(item.name);
+      if (!raw) continue;
+      try {
+        const m = JSON.parse(raw);
+        out[mid] = m.unreadByAdmin || 0;
+      } catch {
+        /* */
+      }
+    }
+    if (res.list_complete) break;
+    cursor = res.cursor;
+  }
+  return out;
+}
+
+async function enrichLicensesWithSupportUnread(kv, licenses) {
+  const unreadMap = await mapSupportUnreadByMachine(kv);
+  for (const row of licenses) {
+    row.supportUnread = unreadMap[row.machineId] || 0;
+  }
+}
+
+async function machineHasSupportOrLicense(kv, machineId) {
+  const lic = await kv.get(`license:${machineId}`);
+  if (lic) return true;
+  const msgs = await getSupportMessages(kv, machineId);
+  return msgs.length > 0;
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -361,6 +601,7 @@ export default {
           getAdminIds(env),
           getLicenseStats(env.LICENSE_KV),
         ]);
+        await enrichLicensesWithSupportUnread(env.LICENSE_KV, licenses);
         return json({ ok: true, licenses, admins, stats });
       }
 
@@ -414,8 +655,100 @@ export default {
         if (!machineId || machineId.length > 128) {
           return json({ ok: false, error: "invalid_machineId" }, 400);
         }
+        await deleteSupportTelegramNotifications(env, machineId);
         await env.LICENSE_KV.delete(`license:${machineId}`);
         return json({ ok: true, machineId });
+      }
+
+      if (path === "/admin/support/messages" && request.method === "GET") {
+        const guard = await adminApiGuard(request, env);
+        if (guard) return guard;
+        const machineId = (url.searchParams.get("machineId") || "").trim();
+        if (!machineId || machineId.length > 128) {
+          return json({ ok: false, error: "invalid_machineId" }, 400);
+        }
+        await clearAdminUnread(env, machineId);
+        const messages = await getSupportMessages(env.LICENSE_KV, machineId);
+        return json({ ok: true, messages });
+      }
+
+      if (path === "/admin/support/reply" && request.method === "POST") {
+        const guard = await adminApiGuard(request, env);
+        if (guard) return guard;
+        const body = await request.json().catch(() => ({}));
+        const machineId = String(body.machineId || "").trim();
+        const text = body.text;
+        if (!machineId || machineId.length > 128) {
+          return json({ ok: false, error: "invalid_machineId" }, 400);
+        }
+        if (!(await machineHasSupportOrLicense(env.LICENSE_KV, machineId))) {
+          return json({ ok: false, error: "no_thread" }, 404);
+        }
+        const r = await appendSupportMessage(env, machineId, "staff", text);
+        if (r.error) {
+          return json({ ok: false, error: r.error }, 400);
+        }
+        return json({ ok: true, message: r.msg });
+      }
+
+      if (path === "/api/support/history" && request.method === "POST") {
+        const body = await request.json().catch(() => ({}));
+        const machineId = String(body.machineId || "").trim();
+        if (!machineId || machineId.length > 128) {
+          return json({ ok: false, error: "invalid_machineId" }, 400);
+        }
+        if (!(await readActiveLicenseRecord(env.LICENSE_KV, machineId))) {
+          return json({ ok: false, error: "no_license" }, 403);
+        }
+        const messages = await getSupportMessages(env.LICENSE_KV, machineId);
+        const rawM = await env.LICENSE_KV.get(`${SUPPORT_META_PREFIX}${machineId}`);
+        let unreadByUser = 0;
+        if (rawM) {
+          try {
+            unreadByUser = Number(JSON.parse(rawM).unreadByUser || 0) || 0;
+          } catch {
+            /* */
+          }
+        }
+        return json({ ok: true, messages, unreadByUser });
+      }
+
+      if (path === "/api/support/send" && request.method === "POST") {
+        const body = await request.json().catch(() => ({}));
+        const machineId = String(body.machineId || "").trim();
+        const text = body.text;
+        if (!machineId || machineId.length > 128) {
+          return json({ ok: false, error: "invalid_machineId" }, 400);
+        }
+        if (!(await readActiveLicenseRecord(env.LICENSE_KV, machineId))) {
+          return json({ ok: false, error: "no_license" }, 403);
+        }
+        if (!(await supportRateAllow(env, machineId))) {
+          return json({ ok: false, error: "rate_limit" }, 429);
+        }
+        const r = await appendSupportMessage(env, machineId, "user", text);
+        if (r.error) {
+          return json({ ok: false, error: r.error }, 400);
+        }
+        if (r.msg) {
+          ctx.waitUntil(
+            supportNotifyAdminsUserMessage(env, machineId, r.msg).catch(() => {})
+          );
+        }
+        return json({ ok: true, message: r.msg });
+      }
+
+      if (path === "/api/support/ack-user" && request.method === "POST") {
+        const body = await request.json().catch(() => ({}));
+        const machineId = String(body.machineId || "").trim();
+        if (!machineId || machineId.length > 128) {
+          return json({ ok: false, error: "invalid_machineId" }, 400);
+        }
+        if (!(await readActiveLicenseRecord(env.LICENSE_KV, machineId))) {
+          return json({ ok: false, error: "no_license" }, 403);
+        }
+        await clearUserUnread(env, machineId);
+        return json({ ok: true });
       }
 
       if (path === "/api/verify" && request.method === "GET") {
