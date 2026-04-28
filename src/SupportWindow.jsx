@@ -13,6 +13,8 @@ function formatMsgTime(ts) {
 export default function SupportWindow() {
   const api = typeof window !== "undefined" ? window.api : null;
   const scrollRef = useRef(null);
+  /** Worker yangilangan bo‘lsa tarix yuklanganida KV tozalanadi — eski serverlar uchun faqat bir marta client ack */
+  const didLifecycleAckRef = useRef(false);
 
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
@@ -58,6 +60,13 @@ export default function SupportWindow() {
       setMessages(Array.isArray(r.messages) ? r.messages : []);
       const u = Number(r.unreadByUser || 0) || 0;
       setNote(u > 0 ? "Yangi javoblarni ko‘ribsiz." : "");
+      if (!didLifecycleAckRef.current && typeof api?.supportAckStaffUnread === "function") {
+        didLifecycleAckRef.current = true;
+        await api.supportAckStaffUnread();
+      }
+      if (typeof api?.supportRefreshMainBadge === "function") {
+        await api.supportRefreshMainBadge();
+      }
     }
 
     refresh();
@@ -94,6 +103,9 @@ export default function SupportWindow() {
     const again = await api.supportFetchHistory();
     if (again.ok && Array.isArray(again.messages)) {
       setMessages(again.messages);
+    }
+    if (again?.ok && typeof api?.supportRefreshMainBadge === "function") {
+      await api.supportRefreshMainBadge();
     }
   }
 

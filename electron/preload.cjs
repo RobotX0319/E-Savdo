@@ -87,6 +87,8 @@ contextBridge.exposeInMainWorld("api", {
   supportFetchHistory: () => ipcRenderer.invoke("support:fetch-history"),
   supportSendMessage: (text) => ipcRenderer.invoke("support:send-message", text),
   supportAckStaffUnread: () => ipcRenderer.invoke("support:ack-staff-unread"),
+  /** Support oynasidan: asosiy oyna badge uchun serverdan qayta yuklash */
+  supportRefreshMainBadge: () => ipcRenderer.invoke("support:refresh-main-badge"),
   /**
    * @param {(count: number) => void} callback
    * @returns {() => void}

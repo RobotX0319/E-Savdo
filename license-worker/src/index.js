@@ -701,16 +701,9 @@ export default {
           return json({ ok: false, error: "no_license" }, 403);
         }
         const messages = await getSupportMessages(env.LICENSE_KV, machineId);
-        const rawM = await env.LICENSE_KV.get(`${SUPPORT_META_PREFIX}${machineId}`);
-        let unreadByUser = 0;
-        if (rawM) {
-          try {
-            unreadByUser = Number(JSON.parse(rawM).unreadByUser || 0) || 0;
-          } catch {
-            /* */
-          }
-        }
-        return json({ ok: true, messages, unreadByUser });
+        /** Yozishmani yuklash = foydalanuvchi o‘qirdi — badge serverda nol qilinadi */
+        await clearUserUnread(env, machineId);
+        return json({ ok: true, messages, unreadByUser: 0 });
       }
 
       if (path === "/api/support/unread-count" && request.method === "POST") {

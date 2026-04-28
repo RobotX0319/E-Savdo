@@ -77,7 +77,20 @@ function createSupportWindow() {
   }
   supportWindow.on("closed", () => {
     supportWindow = null;
-    void refreshSupportUnreadForMain();
+    /** React unmountidan oldin asosiy jarayon `ack-user` jo‘natsin — aks holda
+     * badge yangilanishi eski `unread` bilan yoziladi (race). */
+    void (async () => {
+      if (!SKIP_LICENSE && LICENSE_WORKER_URL) {
+        try {
+          const userDataDir = app.getPath("userData");
+          const machineId = getOrCreateMachineId(userDataDir);
+          await supportFetchJson("/api/support/ack-user", { machineId });
+        } catch {
+          /* */
+        }
+      }
+      await refreshSupportUnreadForMain();
+    })();
   });
 }
 
@@ -675,6 +688,11 @@ function registerIpc() {
     } catch {
       return { ok: false };
     }
+  });
+
+  ipcMain.handle("support:refresh-main-badge", async () => {
+    await refreshSupportUnreadForMain();
+    return { ok: true };
   });
 }
 
