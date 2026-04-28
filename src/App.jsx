@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { Info, LifeBuoy, Pencil, ShoppingCart, Trash2 } from "lucide-react";
+import { Info, LifeBuoy, Pencil, Trash2 } from "lucide-react";
 import {
   copySaleDraftAsImage,
   copySaleReceiptAsImage,
@@ -70,6 +70,7 @@ const emptyAdhocSaleForm = {
 
 const STANDARD_UNIT_OPTIONS = [
   { value: "dona", label: "dona" },
+  { value: "m", label: "m" },
   { value: "m²", label: "m²" },
   { value: "kg", label: "kg" }
 ];
@@ -78,10 +79,13 @@ const STANDARD_UNIT_SET = new Set(STANDARD_UNIT_OPTIONS.map((o) => o.value));
 
 function canonicalUnitString(raw) {
   const u = String(raw ?? "").trim();
-  return u === "m2" ? "m²" : u;
+  const ul = u.toLowerCase();
+  if (u === "m2" || ul === "m2") return "m²";
+  if (ul === "meter" || ul === "metr" || ul === "метр" || ul === "м") return "m";
+  return u;
 }
 
-/** Savatdagi omborsiz qator: faqat standart uchta birlik */
+/** Savatdagi omborsiz qator: faqat standart to'rtta birlik */
 function adhocUnitForSelect(raw) {
   const c = canonicalUnitString(raw);
   return STANDARD_UNIT_SET.has(c) ? c : "dona";
@@ -531,7 +535,8 @@ export default function App() {
   });
 
   const [productsListQuery, setProductsListQuery] = useState("");
-  const [productsListFilter, setProductsListFilter] = useState("all");
+  /** Default: faqat aktiv — ombordan olib tashlanganda qator darhol yo‘qoladi */
+  const [productsListFilter, setProductsListFilter] = useState("active");
   const [customersListQuery, setCustomersListQuery] = useState("");
   const [historySearchQuery, setHistorySearchQuery] = useState("");
   const [historyDateFrom, setHistoryDateFrom] = useState("");
@@ -1386,7 +1391,7 @@ export default function App() {
         const stockNorm = normalizeStockLevel(productForm.unit, productForm.edit_stock_qty);
         if (stockNorm === null) {
           pushNotice(
-            "Qoldiq noto'g'ri: manfiy bo'lmasin; kg/m² uchun 0,001 qadam, dona uchun butun son."
+            "Qoldiq noto'g'ri: manfiy bo'lmasin; kg, m, m² uchun 0,001 qadam, dona uchun butun son."
           );
           return;
         }
@@ -1455,6 +1460,7 @@ export default function App() {
       setEditingProductId(null);
     }
     pushNotice(`«${name}» ombor ro‘yxatidan olindi.`);
+    setProductsListFilter("active");
     await refreshMainData();
     await loadReport();
   }
@@ -3424,6 +3430,7 @@ export default function App() {
             {productsFormOpen ? (
               <div className="collapsible-body">
                 <form className="form product-edit-form" onSubmit={handleProductSubmit}>
+                  <div className="product-form-fields-scroll">
                   <div className="product-form-fields-grid">
                   <label>
                     Nomi
@@ -3500,6 +3507,7 @@ export default function App() {
                     />
                   </label>
                   </div>
+                  </div>
                   <div className="product-form-actions-row">
                     <button className="btn" type="submit">
                       {editingProductId ? "Saqlash" : "Qo'shish"}
@@ -3540,8 +3548,8 @@ export default function App() {
                 onChange={(e) => setProductsListFilter(e.target.value)}
                 aria-label="Mahsulotlar filtri"
               >
-                <option value="all">Barchasi</option>
                 <option value="active">Faqat aktiv</option>
+                <option value="all">Barchasi (jami)</option>
                 <option value="inactive">Nofaol</option>
                 <option value="low_stock">Kam qoldiq (o&apos;z chegarasi, aktiv)</option>
                 <option value="no_stock">Qoldiq 0 yoki manfiy</option>
@@ -3586,7 +3594,7 @@ export default function App() {
                                 void handleRemoveProductFromWarehouse(item);
                               }}
                             >
-                              <ShoppingCart size={16} strokeWidth={2} aria-hidden />
+                              <Trash2 size={16} strokeWidth={2} aria-hidden />
                             </button>
                           ) : null}
                         </div>

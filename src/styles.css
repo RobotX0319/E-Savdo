@@ -671,16 +671,22 @@ body {
   border-bottom: 1px solid #e2e8f0;
 }
 
-.product-form-fields-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px 16px;
+/** Mahsulot formasi — 5 ta maydon bitta qatorda; torida gorizontal scroll */
+.product-form-fields-scroll {
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: visible;
+  padding-bottom: 6px;
+  -webkit-overflow-scrolling: touch;
 }
 
-@media (max-width: 720px) {
-  .product-form-fields-grid {
-    grid-template-columns: 1fr;
-  }
+.product-form-fields-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(110px, 1fr));
+  gap: 8px 12px;
+  align-items: end;
+  width: max(100%, 740px);
+  min-width: 0;
 }
 
 .product-form-actions-row {
@@ -711,6 +717,18 @@ body {
   min-width: 36px !important;
   padding-left: 10px !important;
   padding-right: 10px !important;
+  border: 1px solid #fecaca !important;
+  background: #fef2f2 !important;
+  color: #dc2626 !important;
+}
+
+.product-warehouse-remove-btn:hover:not(:disabled) {
+  background: #fee2e2 !important;
+  border-color: #f87171 !important;
+}
+
+.product-warehouse-remove-btn svg {
+  flex-shrink: 0;
 }
 
 .two-col {

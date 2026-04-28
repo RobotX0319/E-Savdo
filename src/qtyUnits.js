@@ -1,4 +1,4 @@
-/** kg, m² va h.k. o'lchovli mahsulotlar uchun 0.001 qadam; dona — butun son */
+/** kg, m, m² va h.k. o'lchovli mahsulotlar uchun 0.001 qadam; dona — butun son */
 
 export function isFractionalMeasureUnit(unit) {
   const u = String(unit ?? "")
@@ -11,6 +11,7 @@ export function isFractionalMeasureUnit(unit) {
   if (u.includes("kg") || u.includes("кг")) return true;
   if (u.includes("m²") || u.includes("m2") || u.includes("mkv") || u.includes("kvm")) return true;
   if (u.includes("kv.m") || u.includes("kv/m") || u.includes("m^2")) return true;
+  if (c === "m" || c === "meter" || c === "metr" || c === "метр" || c === "м") return true;
   return false;
 }
 
