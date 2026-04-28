@@ -83,7 +83,21 @@ contextBridge.exposeInMainWorld("api", {
 
   /** Aloqa markazi: yangi Electron oyna + worker API */
   supportOpenWindow: () => ipcRenderer.invoke("support:open-window"),
+  supportGetUnreadCount: () => ipcRenderer.invoke("support:get-unread-count"),
   supportFetchHistory: () => ipcRenderer.invoke("support:fetch-history"),
   supportSendMessage: (text) => ipcRenderer.invoke("support:send-message", text),
-  supportAckStaffUnread: () => ipcRenderer.invoke("support:ack-staff-unread")
+  supportAckStaffUnread: () => ipcRenderer.invoke("support:ack-staff-unread"),
+  /**
+   * @param {(count: number) => void} callback
+   * @returns {() => void}
+   */
+  onSupportUnreadCount: (callback) => {
+    if (typeof callback !== "function") {
+      return () => {};
+    }
+    const channel = "support:unread-count";
+    const listener = (_event, count) => callback(Number(count) || 0);
+    ipcRenderer.on(channel, listener);
+    return () => ipcRenderer.removeListener(channel, listener);
+  }
 });

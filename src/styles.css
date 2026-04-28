@@ -202,6 +202,33 @@ body {
   padding-right: 0;
 }
 
+.topbar-support-wrap {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+
+.topbar-support-badge {
+  position: absolute;
+  top: -4px;
+  right: -6px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  box-sizing: border-box;
+  border-radius: 999px;
+  background: #dc2626;
+  color: #ffffff;
+  font-size: 0.65rem;
+  font-weight: 800;
+  line-height: 18px;
+  text-align: center;
+  box-shadow: 0 1px 6px rgba(15, 23, 42, 0.3);
+  pointer-events: none;
+  border: 2px solid #ffffff;
+}
+
 .db-menu-wrap {
   position: relative;
 }
@@ -2154,16 +2181,35 @@ td {
   }
 }
 
-/* Support oynasi (Electron, ?mode=support) */
-.support-app {
-  min-height: 100vh;
+/* Support oynasi (Electron, ?mode=support) — yozish qismi doim pastda, xabarlar scroll */
+html.support-window-mode,
+body.support-window-mode {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+body.support-window-mode #root {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+
+.support-app {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-sizing: border-box;
   background: #f8fafc;
   color: #0f172a;
 }
 
 .support-app-header {
+  flex-shrink: 0;
   padding: 14px 16px;
   border-bottom: 1px solid #e2e8f0;
   background: #ffffff;
@@ -2183,6 +2229,7 @@ td {
 }
 
 .support-app-banner {
+  flex-shrink: 0;
   margin: 10px 12px 0;
   padding: 10px 12px;
   border-radius: 10px;
@@ -2203,13 +2250,15 @@ td {
 }
 
 .support-app-messages {
-  flex: 1;
+  flex: 1 1 auto;
   min-height: 0;
+  overflow-x: hidden;
   overflow-y: auto;
   padding: 16px;
   display: flex;
   flex-direction: column;
   gap: 12px;
+  -webkit-overflow-scrolling: touch;
 }
 
 .support-app-empty {
@@ -2274,13 +2323,14 @@ td {
   padding: 14px;
   border-top: 1px solid #e2e8f0;
   background: #ffffff;
+  box-sizing: border-box;
 }
 
 .support-app-input {
   flex: 1;
   min-height: 48px;
-  max-height: 160px;
-  resize: vertical;
+  max-height: 120px;
+  resize: none;
   padding: 10px 12px;
   border-radius: 10px;
   border: 1px solid #cbd5e1;

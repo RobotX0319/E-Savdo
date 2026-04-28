@@ -77,7 +77,34 @@ function createSupportWindow() {
   }
   supportWindow.on("closed", () => {
     supportWindow = null;
+    void refreshSupportUnreadForMain();
   });
+}
+
+function pushSupportUnreadCountToRenderer(count) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const n = Math.min(99, Math.max(0, Number(count) || 0));
+  mainWindow.webContents.send("support:unread-count", n);
+}
+
+async function refreshSupportUnreadForMain() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (SKIP_LICENSE) {
+    pushSupportUnreadCountToRenderer(0);
+    return;
+  }
+  if (!LICENSE_WORKER_URL) return;
+  const userDataDir = app.getPath("userData");
+  const machineId = getOrCreateMachineId(userDataDir);
+  try {
+    const { okHttp, j } = await supportFetchJson("/api/support/unread-count", { machineId });
+    if (!okHttp || !j?.ok) {
+      return;
+    }
+    pushSupportUnreadCountToRenderer(j.unreadByUser);
+  } catch {
+    /* */
+  }
 }
 
 async function supportFetchJson(postPath, bodyObj) {
@@ -536,6 +563,34 @@ function registerIpc() {
   ipcMain.handle("support:open-window", () => {
     createSupportWindow();
     return { ok: true };
+  });
+
+  ipcMain.handle("support:get-unread-count", async () => {
+    if (SKIP_LICENSE) {
+      return { ok: true, unreadByUser: 0, skipped: true };
+    }
+    const userDataDir = app.getPath("userData");
+    const machineId = getOrCreateMachineId(userDataDir);
+    try {
+      const { okHttp, j } = await supportFetchJson("/api/support/unread-count", { machineId });
+      if (!okHttp || !j.ok) {
+        return {
+          ok: false,
+          error: j.error || "unread_failed",
+          unreadByUser: 0
+        };
+      }
+      return {
+        ok: true,
+        unreadByUser: Number(j.unreadByUser || 0) || 0
+      };
+    } catch (e) {
+      return {
+        ok: false,
+        error: e?.message === "worker_not_configured" ? "worker_not_configured" : "network",
+        unreadByUser: 0
+      };
+    }
   });
 
   ipcMain.handle("support:fetch-history", async () => {

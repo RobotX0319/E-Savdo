@@ -24,6 +24,9 @@ const APP_ABOUT_LEAD =
 /** Obuna: internet bo‘lganda davriy tekshirish oralig‘i (ms). */
 const LICENSE_POLL_INTERVAL_MS = 5 * 60 * 1000;
 
+/** Support: staff o‘qilmagan xabarlar (badge) uchun polling. */
+const SUPPORT_BADGE_POLL_MS = 45 * 1000;
+
 const tabs = [
   { id: "dashboard", label: "Dashboard" },
   { id: "products", label: "Mahsulotlar" },
@@ -477,6 +480,8 @@ export default function App() {
   const [updateDownloadProgress, setUpdateDownloadProgress] = useState(null);
   /** Yuklab olingan, lekin o'rnatilmagan — "Yangilash" tugmasi */
   const [updatePendingInstall, setUpdatePendingInstall] = useState(null);
+  /** Support: support tomondan kelgan o‘qilmangan javoblar (badge raqami) */
+  const [supportStaffUnread, setSupportStaffUnread] = useState(0);
 
   const customerChatEndRef = useRef(null);
   const appMainRef = useRef(null);
@@ -574,6 +579,57 @@ export default function App() {
       cancelled = true;
     };
   }, [api]);
+
+  useEffect(() => {
+    if (licensePhase !== "ok") {
+      setSupportStaffUnread(0);
+    }
+  }, [licensePhase]);
+
+  useEffect(() => {
+    if (licensePhase !== "ok" || typeof api?.supportGetUnreadCount !== "function") {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    async function refreshBadge() {
+      if (cancelled || !navigator.onLine) {
+        return;
+      }
+      try {
+        const r = await api.supportGetUnreadCount();
+        if (cancelled || !r?.ok) {
+          return;
+        }
+        setSupportStaffUnread(Math.min(99, Number(r.unreadByUser ?? 0) || 0));
+      } catch {
+        /* */
+      }
+    }
+
+    function onOnline() {
+      void refreshBadge();
+    }
+
+    void refreshBadge();
+    const intervalId = window.setInterval(() => void refreshBadge(), SUPPORT_BADGE_POLL_MS);
+    window.addEventListener("online", onOnline);
+
+    const unsub =
+      typeof api.onSupportUnreadCount === "function"
+        ? api.onSupportUnreadCount((n) => {
+            setSupportStaffUnread(Math.min(99, Number(n) || 0));
+          })
+        : () => {};
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+      window.removeEventListener("online", onOnline);
+      unsub();
+    };
+  }, [licensePhase, api]);
 
   useEffect(() => {
     if (!aboutModalOpen || typeof api?.getUpdateState !== "function") return undefined;
@@ -2573,15 +2629,30 @@ export default function App() {
             ) : null}
           </div>
           {typeof window !== "undefined" && typeof window.api?.supportOpenWindow === "function" ? (
-            <button
-              type="button"
-              className="btn secondary about-top-btn"
-              aria-label="Qo'llab-quvvatlash chat"
-              title="Support — yozishma"
-              onClick={() => void window.api.supportOpenWindow()}
-            >
-              <LifeBuoy size={20} strokeWidth={2} aria-hidden />
-            </button>
+            <span className="topbar-support-wrap">
+              <button
+                type="button"
+                className="btn secondary about-top-btn"
+                aria-label={
+                  supportStaffUnread > 0
+                    ? `Qo'llab-quvvatlash — ${supportStaffUnread} ta o'qilmagan javob`
+                    : "Qo'llab-quvvatlash chat"
+                }
+                title={
+                  supportStaffUnread > 0
+                    ? `${supportStaffUnread} ta yangi javob`
+                    : "Support — yozishma"
+                }
+                onClick={() => void window.api.supportOpenWindow()}
+              >
+                <LifeBuoy size={20} strokeWidth={2} aria-hidden />
+              </button>
+              {supportStaffUnread > 0 ? (
+                <span className="topbar-support-badge" aria-hidden>
+                  {supportStaffUnread > 99 ? "99+" : supportStaffUnread}
+                </span>
+              ) : null}
+            </span>
           ) : null}
           <button
             type="button"

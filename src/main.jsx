@@ -7,6 +7,12 @@ import "./styles.css";
 const mode =
   typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("mode") : null;
 
+/** Support oynasi: html/body balandligi to‘liq, scroll faqat xabarlar qutisida */
+if (typeof document !== "undefined" && mode === "support") {
+  document.documentElement.classList.add("support-window-mode");
+  document.body.classList.add("support-window-mode");
+}
+
 const Root = mode === "support" ? SupportWindow : App;
 
 createRoot(document.getElementById("root")).render(

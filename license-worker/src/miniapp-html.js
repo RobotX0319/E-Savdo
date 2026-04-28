@@ -163,18 +163,21 @@ export function getMiniAppHtml() {
       display: flex; flex-direction: column; gap: 10px;
     }
     .support-msg-row { display: flex; }
-    .support-msg-row.row-user { justify-content: flex-end; }
-    .support-msg-row.row-staff { justify-content: flex-start; }
+    /* Foydalanuvchi — chapda; javoblar (staff) — o‘ngda */
+    .support-msg-row.row-user { justify-content: flex-start; }
+    .support-msg-row.row-staff { justify-content: flex-end; }
     .support-bubble {
       max-width: 88%; padding: 10px 12px; border-radius: 14px;
       font-size: 0.9rem; line-height: 1.38; word-break: break-word; white-space: pre-wrap;
     }
+    /* Ranglar bilan ham o‘rni almashtirildi: user — kulrang chap, staff — ko‘k o‘ng */
     .support-bubble.b-user {
-      background: #2563eb; color: #fff; border-radius: 14px 14px 4px 14px;
-    }
-    .support-bubble.b-staff {
       background: var(--tg-theme-secondary-bg-color, #334155); color: inherit;
       border-radius: 14px 14px 14px 4px;
+    }
+    .support-bubble.b-staff {
+      background: #2563eb; color: #fff;
+      border-radius: 14px 14px 4px 14px;
     }
     .support-meta { font-size: 0.65rem; opacity: 0.7; margin-top: 4px; }
     .support-composer-row { display: flex; gap: 8px; margin-top: 10px; flex-shrink: 0; align-items: flex-end; }

@@ -713,6 +713,27 @@ export default {
         return json({ ok: true, messages, unreadByUser });
       }
 
+      if (path === "/api/support/unread-count" && request.method === "POST") {
+        const body = await request.json().catch(() => ({}));
+        const machineId = String(body.machineId || "").trim();
+        if (!machineId || machineId.length > 128) {
+          return json({ ok: false, error: "invalid_machineId" }, 400);
+        }
+        if (!(await readActiveLicenseRecord(env.LICENSE_KV, machineId))) {
+          return json({ ok: false, error: "no_license" }, 403);
+        }
+        const rawM = await env.LICENSE_KV.get(`${SUPPORT_META_PREFIX}${machineId}`);
+        let unreadByUser = 0;
+        if (rawM) {
+          try {
+            unreadByUser = Number(JSON.parse(rawM).unreadByUser || 0) || 0;
+          } catch {
+            /* */
+          }
+        }
+        return json({ ok: true, unreadByUser });
+      }
+
       if (path === "/api/support/send" && request.method === "POST") {
         const body = await request.json().catch(() => ({}));
         const machineId = String(body.machineId || "").trim();
