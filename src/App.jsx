@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { Info, LifeBuoy, Pencil, Trash2 } from "lucide-react";
+import { Info, LifeBuoy, Pencil, ShoppingCart, Trash2 } from "lucide-react";
 import {
   copySaleDraftAsImage,
   copySaleReceiptAsImage,
@@ -1434,24 +1434,27 @@ export default function App() {
     });
   }
 
-  async function handleProductDeactivate() {
-    if (!editingProductId || !api) return;
+  /** Ro'yxatdan: mahsulotni ombordan (nofaol) olib tashlash — tahrirlash oynasi ochilmasligi mumkin */
+  async function handleRemoveProductFromWarehouse(product) {
+    if (!api?.deactivateProduct || !product?.id) return;
+    const name = String(product.name || "").trim() || `ID ${product.id}`;
     const confirm = await api.showConfirm({
-      title: "Mahsulotni o'chirish",
-      message:
-        "Bu mahsulot ro'yxatdan olib tashlanadi (narx va qoldiqlar saqlanadi, savda tarixi o'zgarishsiz).",
-      detail: "Keyinroq 'Nofaol' filtridan ko'rasiz.",
-      confirmLabel: "O'chirish"
+      title: "Ombordan olib tashlash",
+      message: `«${name}» mahsuloti ro‘yxatdan chiqariladi.`,
+      detail: "Savdo tarixi va avvalgi operatsiyalar saqlanadi; mahsulot endi aktiv ro‘yxatda ko‘rinmaydi.",
+      confirmLabel: "Olib tashlash"
     });
     if (!confirm?.ok) return;
-    const result = await api.deactivateProduct(editingProductId);
+    const result = await api.deactivateProduct(Number(product.id));
     if (!result?.ok) {
-      pushNotice(String(result?.error || "Mahsulot o'chirilmadi."));
+      pushNotice(String(result?.error || "Olib tashlash bajarilmadi."));
       return;
     }
-    setProductForm(emptyProductForm);
-    setEditingProductId(null);
-    pushNotice("Mahsulot ro'yxatdan olib tashlandi.");
+    if (editingProductId === Number(product.id)) {
+      setProductForm(emptyProductForm);
+      setEditingProductId(null);
+    }
+    pushNotice(`«${name}» ombor ro‘yxatidan olindi.`);
     await refreshMainData();
     await loadReport();
   }
@@ -3400,7 +3403,11 @@ export default function App() {
 
       {activeTab === "products" && (
         <section className="grid cards">
-          <article className="card full collapsible-card">
+          <article
+            className={`card full collapsible-card products-form-panel${
+              productsFormOpen ? " products-form-panel--sticky" : ""
+            }`}
+          >
             <button
               type="button"
               className="collapsible-trigger"
@@ -3416,7 +3423,8 @@ export default function App() {
             </button>
             {productsFormOpen ? (
               <div className="collapsible-body">
-                <form className="form" onSubmit={handleProductSubmit}>
+                <form className="form product-edit-form" onSubmit={handleProductSubmit}>
+                  <div className="product-form-fields-grid">
                   <label>
                     Nomi
                     <input
@@ -3491,7 +3499,8 @@ export default function App() {
                       }
                     />
                   </label>
-                  <div className="row">
+                  </div>
+                  <div className="product-form-actions-row">
                     <button className="btn" type="submit">
                       {editingProductId ? "Saqlash" : "Qo'shish"}
                     </button>
@@ -3505,15 +3514,6 @@ export default function App() {
                         }}
                       >
                         Bekor qilish
-                      </button>
-                    )}
-                    {editingProductId && (
-                      <button
-                        className="btn danger"
-                        type="button"
-                        onClick={() => void handleProductDeactivate()}
-                      >
-                        Mahsulotni o&apos;chirish
                       </button>
                     )}
                   </div>
@@ -3565,10 +3565,31 @@ export default function App() {
                       <td>{formatMoney(item.sale_price_minor)} so'm</td>
                       <td>{formatQtyPlain(item.stock_qty)}</td>
                       <td>{item.unit}</td>
-                      <td>
-                        <button className="btn tiny" onClick={() => fillProductForEdit(item)}>
-                          Tahrirlash
-                        </button>
+                      <td className="product-row-actions-cell">
+                        <div className="product-row-actions">
+                          <button
+                            type="button"
+                            className="btn tiny"
+                            onClick={() => fillProductForEdit(item)}
+                          >
+                            Tahrirlash
+                          </button>
+                          {Number(item.is_active) !== 0 ? (
+                            <button
+                              type="button"
+                              className="btn tiny product-warehouse-remove-btn"
+                              title="Ombordan olib tashlash"
+                              aria-label="Ombordan olib tashlash"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                void handleRemoveProductFromWarehouse(item);
+                              }}
+                            >
+                              <ShoppingCart size={16} strokeWidth={2} aria-hidden />
+                            </button>
+                          ) : null}
+                        </div>
                       </td>
                     </tr>
                   ))}
