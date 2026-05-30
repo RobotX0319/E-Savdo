@@ -580,6 +580,63 @@ class DatabaseService {
     return { ok: true };
   }
 
+  /**
+   * Mahsulotni bazadan o'chirish. Savdo/qoralama qatorlarida nom saqlanadi (adhoc_label).
+   * Ombor harakatlari va qoldiq yozuvlari o'chiriladi.
+   */
+  deleteProductPermanently(productId) {
+    const id = Number(productId);
+    if (!Number.isFinite(id) || id <= 0) {
+      return { ok: false, error: "invalid_id" };
+    }
+    const row = this.selectOne("SELECT id, name, unit FROM products WHERE id = ?;", [id]);
+    if (!row) {
+      return { ok: false, error: "not_found" };
+    }
+    const snapName = String(row.name || "").trim();
+    const snapUnit = String(row.unit || "").trim() || "dona";
+    try {
+      this.db.exec("BEGIN TRANSACTION;");
+      this.execute(
+        `UPDATE sale_items
+         SET product_id = NULL,
+             adhoc_label = CASE
+               WHEN TRIM(COALESCE(adhoc_label, '')) != '' THEN adhoc_label
+               ELSE ?
+             END,
+             adhoc_unit = CASE
+               WHEN TRIM(COALESCE(adhoc_unit, '')) != '' THEN adhoc_unit
+               ELSE ?
+             END
+         WHERE product_id = ?;`,
+        [snapName, snapUnit, id]
+      );
+      this.execute(
+        `UPDATE sale_draft_items
+         SET product_id = NULL,
+             adhoc_label = CASE
+               WHEN TRIM(COALESCE(adhoc_label, '')) != '' THEN adhoc_label
+               ELSE ?
+             END,
+             adhoc_unit = CASE
+               WHEN TRIM(COALESCE(adhoc_unit, '')) != '' THEN adhoc_unit
+               ELSE ?
+             END
+         WHERE product_id = ?;`,
+        [snapName, snapUnit, id]
+      );
+      this.execute("DELETE FROM inventory_movements WHERE product_id = ?;", [id]);
+      this.execute("DELETE FROM inventory_balances WHERE product_id = ?;", [id]);
+      this.execute("DELETE FROM products WHERE id = ?;", [id]);
+      this.db.exec("COMMIT;");
+      this.persist();
+      return { ok: true };
+    } catch (error) {
+      this.db.exec("ROLLBACK;");
+      return { ok: false, error: error.message };
+    }
+  }
+
   adjustInventory(payload) {
     const productId = Number(payload.product_id);
     const delta = Number(payload.delta_qty);

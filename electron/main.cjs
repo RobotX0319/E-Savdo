@@ -173,6 +173,25 @@ function createWindow() {
   }
 }
 
+/** Ikkinchi marta ishga tushirish: yangi jarayon emas, mavjud asosiy oyna */
+function focusMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow();
+    setMainWindowGetter(() => mainWindow);
+    return;
+  }
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+  if (!mainWindow.isVisible()) {
+    mainWindow.show();
+  }
+  mainWindow.focus();
+  if (mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
+    mainWindow.webContents.focus();
+  }
+}
+
 function registerIpc() {
   /** Electron da window.confirm Windows fokusini buzadi — native dialog + fokus tiklash */
   ipcMain.handle("app:show-confirm", async (_, payload) => {
@@ -198,6 +217,46 @@ function registerIpc() {
       mainWindow.webContents.focus();
     }
     return { ok: response === 1 };
+  });
+
+  ipcMain.handle("app:show-product-remove-choice", async (_, payload) => {
+    const name = String(payload?.name || "Mahsulot").trim() || "Mahsulot";
+    const alreadyInactive = !!payload?.alreadyInactive;
+    if (!mainWindow) {
+      return { action: "cancel" };
+    }
+    const buttons = alreadyInactive
+      ? ["Bekor qilish", "Butunlay o'chirish"]
+      : ["Bekor qilish", "Nofaol ro'yxatga", "Butunlay o'chirish"];
+    const { response } = await dialog.showMessageBox(mainWindow, {
+      type: "warning",
+      buttons,
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+      title: "Mahsulotni o'chirish",
+      message: `«${name}»`,
+      detail: alreadyInactive
+        ? "Mahsulot allaqachon nofaol. Butunlay o'chirish — bazadan yo'qoladi; savdo tarixida mahsulot nomi qoldiriladi."
+        : "Nofaol ro'yxatga — savdo tarixi saqlanadi, faqat aktiv ro'yxatdan olib tashlanadi. Butunlay o'chirish — mahsulot bazadan o'chiriladi; savdo qatorlarida nom saqlanadi."
+    });
+    mainWindow.focus();
+    if (mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
+      mainWindow.webContents.focus();
+    }
+    if (response === 0) {
+      return { action: "cancel" };
+    }
+    if (alreadyInactive) {
+      return { action: response === 1 ? "permanent" : "cancel" };
+    }
+    if (response === 1) {
+      return { action: "deactivate" };
+    }
+    if (response === 2) {
+      return { action: "permanent" };
+    }
+    return { action: "cancel" };
   });
 
   ipcMain.handle("app:focus-window", () => {
@@ -326,6 +385,7 @@ function registerIpc() {
   ipcMain.handle("products:create", async (_, payload) => dbService.createProduct(payload));
   ipcMain.handle("products:update", async (_, payload) => dbService.updateProduct(payload));
   ipcMain.handle("products:deactivate", async (_, id) => dbService.deactivateProduct(id));
+  ipcMain.handle("products:delete", async (_, id) => dbService.deleteProductPermanently(id));
 
   ipcMain.handle("inventory:adjust", async (_, payload) => dbService.adjustInventory(payload));
 
@@ -696,45 +756,57 @@ function registerIpc() {
   });
 }
 
-app.whenReady().then(async () => {
-  Menu.setApplicationMenu(null);
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
 
-  const wstate = warehouses.prepareOnStartup(app.getPath("userData"));
-  appDbPath = wstate.appDbPath;
-  dbService = new DatabaseService(appDbPath);
-  await dbService.init();
-  registerIpc();
-  createWindow();
-  setMainWindowGetter(() => mainWindow);
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    focusMainWindow();
+  });
 
-  if (app.isPackaged) {
-    const delayMs = 12_000;
-    setTimeout(() => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        void checkForUpdatesOnStartupQuiet(mainWindow);
+  app.whenReady().then(async () => {
+    Menu.setApplicationMenu(null);
+
+    const wstate = warehouses.prepareOnStartup(app.getPath("userData"));
+    appDbPath = wstate.appDbPath;
+    dbService = new DatabaseService(appDbPath);
+    await dbService.init();
+    registerIpc();
+    createWindow();
+    setMainWindowGetter(() => mainWindow);
+
+    if (app.isPackaged) {
+      const delayMs = 12_000;
+      setTimeout(() => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          void checkForUpdatesOnStartupQuiet(mainWindow);
+        }
+      }, delayMs);
+    }
+
+    app.on("activate", () => {
+      if (BrowserWindow.getAllWindows().length === 0) {
+        createWindow();
+      } else {
+        focusMainWindow();
       }
-    }, delayMs);
-  }
+    });
+  });
 
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
+  app.on("before-quit", () => {
+    if (!SKIP_LICENSE) {
+      try {
+        recordAppClose(app.getPath("userData"));
+      } catch {
+        /* ignore */
+      }
     }
   });
-});
 
-app.on("before-quit", () => {
-  if (!SKIP_LICENSE) {
-    try {
-      recordAppClose(app.getPath("userData"));
-    } catch {
-      /* ignore */
+  app.on("window-all-closed", () => {
+    if (process.platform !== "darwin") {
+      app.quit();
     }
-  }
-});
-
-app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
-    app.quit();
-  }
-});
+  });
+}

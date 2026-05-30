@@ -1439,30 +1439,55 @@ export default function App() {
     });
   }
 
-  /** Ro'yxatdan: mahsulotni ombordan (nofaol) olib tashlash — tahrirlash oynasi ochilmasligi mumkin */
+  /** Mahsulotni nofaol qilish yoki bazadan butunlay o'chirish */
   async function handleRemoveProductFromWarehouse(product) {
-    if (!api?.deactivateProduct || !product?.id) return;
+    if (!product?.id) return;
     const name = String(product.name || "").trim() || `ID ${product.id}`;
-    const confirm = await api.showConfirm({
-      title: "Ombordan olib tashlash",
-      message: `«${name}» mahsuloti ro‘yxatdan chiqariladi.`,
-      detail: "Savdo tarixi va avvalgi operatsiyalar saqlanadi; mahsulot endi aktiv ro‘yxatda ko‘rinmaydi.",
-      confirmLabel: "Olib tashlash"
-    });
-    if (!confirm?.ok) return;
-    const result = await api.deactivateProduct(Number(product.id));
-    if (!result?.ok) {
-      pushNotice(String(result?.error || "Olib tashlash bajarilmadi."));
+    const alreadyInactive = Number(product.is_active) === 0;
+
+    if (!api?.showProductRemoveChoice) {
+      pushNotice("Bu amal faqat E-Savdo dasturida mavjud.");
       return;
     }
-    if (editingProductId === Number(product.id)) {
-      setProductForm(emptyProductForm);
-      setEditingProductId(null);
+
+    const choice = await api.showProductRemoveChoice({ name, alreadyInactive });
+    if (!choice || choice.action === "cancel") {
+      return;
     }
-    pushNotice(`«${name}» ombor ro‘yxatidan olindi.`);
-    setProductsListFilter("active");
-    await refreshMainData();
-    await loadReport();
+
+    if (choice.action === "deactivate") {
+      if (!api?.deactivateProduct) return;
+      const result = await api.deactivateProduct(Number(product.id));
+      if (!result?.ok) {
+        pushNotice(String(result?.error || "Nofaol qilish bajarilmadi."));
+        return;
+      }
+      if (editingProductId === Number(product.id)) {
+        setProductForm(emptyProductForm);
+        setEditingProductId(null);
+      }
+      pushNotice(`«${name}» nofaol ro'yxatga o'tkazildi.`);
+      setProductsListFilter("inactive");
+      await refreshMainData();
+      await loadReport();
+      return;
+    }
+
+    if (choice.action === "permanent") {
+      if (!api?.deleteProduct) return;
+      const result = await api.deleteProduct(Number(product.id));
+      if (!result?.ok) {
+        pushNotice(String(result?.error || "Butunlay o'chirib bo'lmadi."));
+        return;
+      }
+      if (editingProductId === Number(product.id)) {
+        setProductForm(emptyProductForm);
+        setEditingProductId(null);
+      }
+      pushNotice(`«${name}» butunlay o'chirildi.`);
+      await refreshMainData();
+      await loadReport();
+    }
   }
 
   function onSaleCustomerNameChange(value) {
@@ -3582,21 +3607,19 @@ export default function App() {
                           >
                             Tahrirlash
                           </button>
-                          {Number(item.is_active) !== 0 ? (
-                            <button
-                              type="button"
-                              className="btn tiny product-warehouse-remove-btn"
-                              title="Ombordan olib tashlash"
-                              aria-label="Ombordan olib tashlash"
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                void handleRemoveProductFromWarehouse(item);
-                              }}
-                            >
-                              <Trash2 size={16} strokeWidth={2} aria-hidden />
-                            </button>
-                          ) : null}
+                          <button
+                            type="button"
+                            className="btn tiny product-warehouse-remove-btn"
+                            title="Mahsulotni o'chirish"
+                            aria-label="Mahsulotni o'chirish"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              void handleRemoveProductFromWarehouse(item);
+                            }}
+                          >
+                            <Trash2 size={16} strokeWidth={2} aria-hidden />
+                          </button>
                         </div>
                       </td>
                     </tr>

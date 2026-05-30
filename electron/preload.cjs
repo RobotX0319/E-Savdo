@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("api", {
   showConfirm: (payload) => ipcRenderer.invoke("app:show-confirm", payload),
+  showProductRemoveChoice: (payload) => ipcRenderer.invoke("app:show-product-remove-choice", payload),
   focusWindow: () => ipcRenderer.invoke("app:focus-window"),
   getAppVersion: () => ipcRenderer.invoke("app:get-version"),
   checkForUpdates: () => ipcRenderer.invoke("app:check-for-updates"),
@@ -42,6 +43,7 @@ contextBridge.exposeInMainWorld("api", {
   createProduct: (payload) => ipcRenderer.invoke("products:create", payload),
   updateProduct: (payload) => ipcRenderer.invoke("products:update", payload),
   deactivateProduct: (id) => ipcRenderer.invoke("products:deactivate", id),
+  deleteProduct: (id) => ipcRenderer.invoke("products:delete", id),
 
   adjustInventory: (payload) => ipcRenderer.invoke("inventory:adjust", payload),
 
